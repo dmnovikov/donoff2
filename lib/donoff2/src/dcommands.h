@@ -39,6 +39,32 @@ class DCommands : public DBase {
     };
   }
 
+  // The settings as text, "name=value" per line: a new parameter moves nothing in the file.
+  std::string saveText() const {
+    const DSettings& s = ctx_.s;
+    std::string t;
+    for (auto& p : table_) t += std::string(p.name) + "=" + std::to_string(*p.v) + "\n";
+    t += "cschm1=" + std::to_string(s.cschm1) + "\ncschm2=" + std::to_string(s.cschm2) + "\ntmatrix=";
+    for (int i = 0; i < 24; i++) t += (i ? "," : "") + std::to_string(s.tmatrix[i]);
+    t += "\n";
+    t += std::string("mqttServer=") + s.mqttServer + "\nmqttUser=" + s.mqttUser + "\nmqttPass=" + s.mqttPass + "\nmqttPort=" + s.mqttPort + "\ndevId=" + s.devId + "\nemail=" + s.email + "\n";
+    return t;
+  }
+
+  // Back from the text, no side effects. Unknown lines and values out of range are skipped.
+  void loadText(const char* text) {
+    std::string t(text);
+    size_t pos = 0;
+    while (pos < t.size()) {
+      size_t nl = t.find('\n', pos);
+      if (nl == std::string::npos) nl = t.size();
+      std::string line = t.substr(pos, nl - pos);
+      pos = nl + 1;
+      size_t eq = line.find('=');
+      if (eq != std::string::npos) loadLine(line.substr(0, eq), line.substr(eq + 1));
+    }
+  }
+
   // One message of /in/params.
   void handle(const char* text) {
     std::string in(text);
@@ -81,6 +107,42 @@ class DCommands : public DBase {
     Kind kind;
     bool is(const std::string& n) const { return n == name || (a1 && n == a1) || (a2 && n == a2); }
   };
+
+  void loadLine(const std::string& k, const std::string& v) {
+    DSettings& s = ctx_.s;
+    long n;
+    for (auto& p : table_)
+      if (k == p.name) {
+        if (toInt(v, &n) && n >= p.lo && n <= p.hi) *p.v = n;
+        return;
+      }
+    if (k == "cschm1" && toInt(v, &n)) s.cschm1 = (uint32_t)n & 0xFFFFFFul;
+    else if (k == "cschm2" && toInt(v, &n)) s.cschm2 = (uint32_t)n & 0xFFFFFFul;
+    else if (k == "tmatrix") loadMatrix(v);
+    else if (k == "mqttServer") copy(s.mqttServer, v);
+    else if (k == "mqttUser") copy(s.mqttUser, v);
+    else if (k == "mqttPass") copy(s.mqttPass, v);
+    else if (k == "mqttPort") copy(s.mqttPort, v);
+    else if (k == "devId") copy(s.devId, v);
+    else if (k == "email") copy(s.email, v);
+  }
+
+  void loadMatrix(const std::string& v) {
+    size_t pos = 0;
+    for (int i = 0; i < 24 && pos <= v.size(); i++) {
+      size_t c = v.find(',', pos);
+      if (c == std::string::npos) c = v.size();
+      long n;
+      if (toInt(v.substr(pos, c - pos), &n) && n >= -5000 && n <= 10000) ctx_.s.tmatrix[i] = n;
+      pos = c + 1;
+    }
+  }
+
+  template <size_t N>
+  static void copy(char (&to)[N], const std::string& v) {
+    if (v.size() >= N) return;
+    strcpy(to, v.c_str());
+  }
 
   static bool isSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 

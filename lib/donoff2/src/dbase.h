@@ -25,6 +25,25 @@ class DEvents {
   virtual void log(const char* text) = 0;
 };
 
+// Several listeners at once: the serial port and MQTT.
+class DEventsHub : public DEvents {
+ public:
+  void add(DEvents* e) {
+    if (n_ < kMax) sinks_[n_++] = e;
+  }
+  void info(const char* t) override {
+    for (uint8_t i = 0; i < n_; i++) sinks_[i]->info(t);
+  }
+  void log(const char* t) override {
+    for (uint8_t i = 0; i < n_; i++) sinks_[i]->log(t);
+  }
+
+ private:
+  static constexpr uint8_t kMax = 3;
+  DEvents* sinks_[kMax] = {};
+  uint8_t n_ = 0;
+};
+
 struct DContext {
   DClock& clock;
   DSettings& s;

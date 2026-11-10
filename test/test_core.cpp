@@ -546,6 +546,52 @@ static void legacyRealSample() {
   printf("sample: dev=%s lschm=%ld lschm2=%ld aofs2=%ld C=%ld D=%ld N=%ld dT=%ld tz=%ld\n", s.devId, (long)s.lschm1, (long)s.lschm2, (long)s.aofs2, (long)s.ctempl, (long)s.dtempl, (long)s.ntempl, (long)s.tdelta, (long)s.tz);
 }
 
+struct MemStorage : DStorage {
+  std::string text;
+  bool load(std::string& t) override {
+    if (text.empty()) return false;
+    t = text;
+    return true;
+  }
+  bool save(const std::string& t) override {
+    text = t;
+    return true;
+  }
+};
+
+static void settingsSurviveRestart() {
+  MemStorage mem;
+  {
+    Rig r;
+    r.b.setStorage(&mem);
+    strcpy(r.s.mqttPass, "p=1");
+    strcpy(r.s.devId, "tav1");
+    r.cmd("lschm2=16");
+    r.cmd("aofs2=60;");
+    r.cmd("cschm1=5:1;");
+    r.cmd("tmatrix=7:19;");
+    r.step();
+    CHECK(!r.ctx.saveWanted);
+    CHECK(!mem.text.empty());
+    CHECK(r.ev.lastLog() == "N:settings saved");
+  }
+  Rig r2;
+  r2.s.hotter = 1;  // loading must not run the side effects of commands
+  r2.b.setStorage(&mem);
+  CHECK(r2.b.loadSettings());
+  CHECK(r2.s.lschm2 == 16 && r2.s.aofs2 == 60 && r2.s.hotter == 0);
+  CHECK(r2.s.tmatrix[7] == 19 && r2.s.tmatrix[8] == 22);
+  CHECK((r2.s.cschm1 >> 18) & 1);
+  CHECK(std::string(r2.s.mqttPass) == "p=1" && std::string(r2.s.devId) == "tav1");
+
+  Rig r3;
+  r3.b.commands().loadText("lschm=999\nbogus=1\naofs=30\n");
+  CHECK(r3.s.lschm1 == 0 && r3.s.aofs1 == 30);
+  MemStorage none;
+  r3.b.setStorage(&none);
+  CHECK(!r3.b.loadSettings());
+}
+
 int main() {
   valueFormat();
   multiValueSensor();
@@ -573,6 +619,7 @@ int main() {
   limiterOffWhenNoThreshold();
   legacySettings();
   legacyRealSample();
+  settingsSurviveRestart();
   printf("%d checks, %d failed\n", gChecks, gFails);
   return gFails ? 1 : 0;
 }

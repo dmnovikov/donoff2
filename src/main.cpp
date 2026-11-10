@@ -1,19 +1,16 @@
-// donoff2 on the bench: settings from the old EEPROM (read only), commands over the serial port.
+// donoff2 on the bench socket.
 #include <Arduino.h>
 #include <EEPROM.h>
+#include <ESP8266WiFi.h>
 #include <ddevice.h>
 #include <dlegacy.h>
+#include <hw/dclock_ntp.h>
+#include <hw/doutput_mqtt.h>
 #include <hw/drelay_gpio.h>
 #include <hw/dsensor_ds18b20.h>
+#include <hw/dstorage_littlefs.h>
 
-class ClockArduino : public DClock {
- public:
-  uint32_t ms() const override { return millis(); }
-  DTimeState timeState() const override { return DTimeState::None; }  // NTP comes with the network
-  uint8_t hour() const override { return (millis() / 3600000UL) % 24; }
-  uint8_t minute() const override { return (millis() / 60000UL) % 60; }
-  int year() const override { return 1970; }
-};
+static const char* const kFirmware = "2.0.0-dev";
 
 class EventsSerial : public DEvents {
  public:
@@ -43,28 +40,54 @@ class BoardBench : public DDevice {
   }
 };
 
-static ClockArduino gClock;
-static EventsSerial gEvents;
+static DClockNtp gClock;
+static EventsSerial gSerial;
+static DEventsHub gEvents;
 static DSettings gSettings;
 static DContext gCtx{gClock, gSettings, gEvents};
 static BoardBench gBoard(gCtx);
+static DOutputMQTT gMqtt(gCtx, gBoard, kFirmware);
+static DStorageLittleFS gStorage;
 static String gLine;
-static uint32_t gLastPrint = 0;
 
-void setup() {
-  Serial.begin(115200);
-  delay(300);
+static bool loadLegacy() {
   EEPROM.begin(512);
   uint8_t raw[dlegacy::kSize];
   for (size_t i = 0; i < sizeof raw; i++) raw[i] = EEPROM.read(i);
   EEPROM.end();
-  bool old = dlegacy::load(raw, sizeof raw, gSettings);
-  Serial.printf("\nDONOFF2 start, legacy settings %s, dev %s, lschm %ld/%ld\n", old ? "ok" : "none", gSettings.devId, (long)gSettings.lschm1, (long)gSettings.lschm2);
+  return dlegacy::load(raw, sizeof raw, gSettings);
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(300);
+  gEvents.add(&gSerial);
+  gEvents.add(&gMqtt);
+  bool fs = gStorage.begin();
+  gBoard.setStorage(&gStorage);
+  bool stored = fs && gBoard.loadSettings();
+  bool legacy = false;
+  if (!stored) {
+    legacy = loadLegacy();
+    if (legacy) gCtx.saveWanted = true;  // moved over once; the old sector stays for a way back
+  }
+  Serial.printf("\nDONOFF2 %s fs=%d stored=%d legacy=%d dev=%s\n", kFirmware, fs, stored, legacy, gSettings.devId);
   gBoard.begin();
+  gClock.begin(gSettings.tz);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin();  // the network saved in the chip
+  gMqtt.begin();
 }
 
 void loop() {
   gBoard.loop();
+  gMqtt.loop();
+  gClock.setTz(gSettings.tz);
+  if (gCtx.rebootWanted) {
+    delay(200);
+    ESP.restart();
+  }
   while (Serial.available()) {
     char c = Serial.read();
     if (c == '\n') {
@@ -73,12 +96,5 @@ void loop() {
     } else {
       gLine += c;
     }
-  }
-  if (millis() - gLastPrint >= 5000) {
-    gLastPrint = millis();
-    char b[24];
-    DValue* v = gBoard.findValue("temp_in");
-    v->format(b, sizeof b);
-    Serial.printf("VALUE temp_in=%s\n", b);
   }
 }

@@ -5,6 +5,7 @@
 #include "drelay.h"
 #include "drule.h"
 #include "dsensor.h"
+#include "dstorage.h"
 
 class DDevice : public DBase {
  public:
@@ -22,7 +23,26 @@ class DDevice : public DBase {
     ruled_ = true;
     lastRules_ = now;
     for (auto* r : rules_) r->loop();
+    if (ctx_.saveWanted) {
+      ctx_.saveWanted = false;
+      if (storage_) {
+        bool ok = storage_->save(commands_.saveText());
+        ctx_.ev.log(ok ? "N:settings saved" : "E:settings not saved");
+      }
+    }
   }
+
+  // The settings from the storage; false: nothing is stored yet.
+  bool loadSettings() {
+    std::string t;
+    if (!storage_ || !storage_->load(t)) return false;
+    commands_.loadText(t.c_str());
+    return true;
+  }
+  void setStorage(DStorage* s) { storage_ = s; }
+  std::vector<DSensor*>& sensors() { return sensors_; }
+  std::vector<DRelay*>& relays() { return relays_; }
+  const char* type() const { return name_; }
 
   DCommands& commands() { return commands_; }
   DValue* findValue(const char* n) {
@@ -41,6 +61,7 @@ class DDevice : public DBase {
 
  private:
   DCommands commands_;
+  DStorage* storage_ = nullptr;
   uint32_t lastRules_ = 0;
   bool ruled_ = false;
 };
