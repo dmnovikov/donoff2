@@ -6,9 +6,11 @@
 
 class DSensorDS18B20 : public DSensor {
  public:
-  DSensorDS18B20(DContext& ctx, const char* valueName, uint8_t pin, uint16_t mbReg = 0)
+  DSensorDS18B20(DContext& ctx, const char* valueName, uint8_t pin, uint16_t mbReg = 0, bool filtered = false, const char* label = nullptr)
       : DSensor(ctx, valueName, 5000, 800), wire_(pin) {
-    addValue(valueName, 100, "C", mbReg);
+    addValue(valueName, 100, "C", mbReg, 1);
+    value(0).label = label;
+    setMedian(filtered);
   }
 
  protected:

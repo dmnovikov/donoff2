@@ -7,7 +7,11 @@
 #include <vector>
 
 #include "ddevice.h"
+#include "dbutton.h"
+#include "dled.h"
 #include "dlegacy.h"
+#include "doutput_modbus.h"
+#include "dpzem.h"
 
 static int gFails = 0, gChecks = 0;
 #define CHECK(c)                                              \
@@ -50,7 +54,7 @@ struct FakeMeter : DSensor {
   int reads = 0;
   FakeMeter(DContext& c) : DSensor(c, "meter", 1000) {
     addValue("temp_in", 100, "C", 10);
-    addValue("press", 10, "hPa", 12);
+    addValue("press", 10, "hPa", 13);
   }
   bool collect() override {
     reads++;
@@ -573,7 +577,7 @@ static void settingsSurviveRestart() {
     r.step();
     CHECK(!r.ctx.saveWanted);
     CHECK(!mem.text.empty());
-    CHECK(r.ev.lastLog() == "N:settings saved");
+    CHECK(r.ev.lastInfo() == "N: saved");
   }
   Rig r2;
   r2.s.hotter = 1;  // loading must not run the side effects of commands
@@ -590,6 +594,235 @@ static void settingsSurviveRestart() {
   MemStorage none;
   r3.b.setStorage(&none);
   CHECK(!r3.b.loadSettings());
+}
+
+static void medianFilter() {
+  DValue v("t", 100, "C");
+  v.median = true;
+  v.set(20);
+  v.set(85);
+  CHECK(!v.ok());  // nothing until three readings are in
+  v.set(21);
+  CHECK(v.ok() && v.raw == 2100);  // the spike is gone
+  v.fail();
+  v.set(22);
+  v.set(23);
+  CHECK(v.ok() && v.raw == 2200);  // one lost reading changes nothing
+  v.fail();
+  v.fail();
+  v.set(23);
+  CHECK(!v.ok() && v.state == DValueState::Error);
+}
+
+static void differenceOfTwo() {
+  Bed e;
+  DValue a("a", 100, "C"), b("b", 100, "C");
+  DSensorDifference d(e.ctx, "odd", &a, &b, 19);
+  d.begin();
+  d.loop();
+  CHECK(!d.value(0).ok());
+  a.set(20);
+  b.set(23.5f);
+  e.clock.now = 2000;
+  d.loop();
+  CHECK(d.value(0).ok() && d.value(0).raw == 350);
+}
+
+struct MbProbe : DOutputModbus {
+  using DOutputModbus::DOutputModbus;
+  void loop() override {}
+};
+
+static void modbusAnswers() {
+  Rig r;
+  MbProbe mb(r.ctx, "mb", r.b);
+  uint8_t o[260];
+  r.b.meter->temp = 21.5f;
+  r.b.meter->press = 1000;
+  r.step();
+  r.clock.now = 70000;
+  const uint8_t values[] = {4, 0, 10, 0, 3};
+  CHECK(mb.answer(values, 5, o) == 8 && o[0] == 4 && o[1] == 6);
+  CHECK(o[2] == 0 && o[3] == 0 && o[4] == 0x08 && o[5] == 0x66);  // 2150, two registers, high word first
+  CHECK(o[6] == 0 && o[7] == 1);                                  // state ok
+  r.b.meter->temp = -5;
+  r.step();
+  CHECK(mb.answer(values, 5, o) == 8 && o[2] == 0xFF && o[3] == 0xFF && o[4] == 0xFE && o[5] == 0x0C);
+  const uint8_t fc3[] = {3, 0, 10, 0, 3};
+  CHECK(mb.answer(fc3, 5, o) == 8 && o[0] == 3);
+  const uint8_t status[] = {4, 0, 1, 0, 3};
+  CHECK(mb.answer(status, 5, o) == 8 && o[3] == 1 && o[6] == 0 && o[7] == 71);
+  r.cmd("r21");
+  const uint8_t bits[] = {1, 0, 0, 0, 2};
+  CHECK(mb.answer(bits, 5, o) == 3 && o[1] == 1 && o[2] == 2);
+  const uint8_t bits2[] = {2, 0, 1, 0, 1};
+  CHECK(mb.answer(bits2, 5, o) == 3 && o[0] == 2 && o[2] == 1);
+  const uint8_t bad[] = {1, 0, 2, 0, 1};
+  CHECK(mb.answer(bad, 5, o) == 2 && o[0] == 0x81 && o[1] == 2);
+  const uint8_t gap[] = {4, 1, 0, 0, 1};
+  CHECK(mb.answer(gap, 5, o) == 2 && o[0] == 0x84 && o[1] == 2);
+  const uint8_t none[] = {4, 0, 10, 0, 0};
+  CHECK(mb.answer(none, 5, o) == 2 && o[1] == 3);
+  const uint8_t tooMany[] = {4, 0, 10, 0, 126};
+  CHECK(mb.answer(tooMany, 5, o) == 2 && o[1] == 3);
+  const uint8_t write1[] = {6, 0, 10, 0, 1};
+  CHECK(mb.answer(write1, 5, o) == 2 && o[0] == 0x86 && o[1] == 1);
+  const uint8_t writeCoil[] = {5, 0, 0, 0xFF, 0};
+  CHECK(mb.answer(writeCoil, 5, o) == 2 && o[0] == 0x85 && o[1] == 1);
+  CHECK(!r.b.r1->isOn());
+}
+
+static void pzemFrame() {
+  uint8_t q[8];
+  dpzem::makeRequest(q);
+  CHECK(q[0] == 0xF8 && q[1] == 0x04 && q[5] == 10);
+  CHECK(q[6] == 0x64 && q[7] == 0x64);
+  uint8_t a[25] = {0xF8, 0x04, 20, 0x08, 0xFC,  // 230.0 V
+                   0x03, 0xE8, 0x00, 0x00,      // 1.000 A
+                   0x08, 0xFC, 0x00, 0x00,      // 230.0 W
+                   0x00, 0x01, 0x00, 0x01,      // 65.537 kWh
+                   0x01, 0xF4, 0x00, 0x64, 0, 0};
+  uint16_t c = dCrc16(a, 23);
+  a[23] = (uint8_t)c;
+  a[24] = (uint8_t)(c >> 8);
+  dpzem::Reading x;
+  CHECK(dpzem::parse(a, 25, x));
+  CHECK(x.voltage > 229.9f && x.voltage < 230.1f && x.current > 0.99f && x.current < 1.01f);
+  CHECK(x.power > 229.9f && x.power < 230.1f && x.energy > 65.5f && x.energy < 65.6f);
+  a[4] ^= 1;
+  CHECK(!dpzem::parse(a, 25, x));
+  CHECK(!dpzem::parse(a, 24, x));
+}
+
+struct FakeButton : DButton {
+  bool down = false;
+  using DButton::DButton;
+  bool pressedNow() override { return down; }
+};
+
+static DButton::Press hold(Bed& e, FakeButton& b, uint32_t ms) {
+  b.down = true;
+  b.loop();
+  e.clock.now += 10;
+  b.loop();
+  e.clock.now += ms;
+  b.down = false;
+  b.loop();
+  e.clock.now += 10;
+  DButton::Press p = b.loop();
+  e.clock.now += 100;
+  b.loop();
+  return p;
+}
+
+static void buttonPresses() {
+  Bed e;
+  FakeButton b(e.ctx, "b");
+  CHECK(hold(e, b, 100) == DButton::Press::Short);
+  CHECK(hold(e, b, 3000) == DButton::Press::Config);
+  CHECK(hold(e, b, 7000) == DButton::Press::None);
+  CHECK(hold(e, b, 9000) == DButton::Press::Reset);
+  CHECK(hold(e, b, 5) == DButton::Press::None);
+}
+
+struct FakeLed : DLed {
+  std::string out;
+  using DLed::DLed;
+  void write(bool h) override { out += h ? '1' : '0'; }
+};
+
+static void ledPattern() {
+  Bed e;
+  FakeLed l(e.ctx, "l");
+  l.setPattern(DLed::Offline);
+  for (int i = 1; i <= 8; i++) {
+    e.clock.now = 250 * i;
+    l.loop();
+  }
+  CHECK(l.out == "10100000");
+}
+
+static void disabledRelayAndExtras() {
+  Rig r;
+  r.cmd("sh r9");
+  CHECK(r.ev.lastInfo() == "I:R9=DISABLED");
+  r.cmd("r91");
+  CHECK(r.ev.lastInfo() == "I:R9=DISABLED");
+  r.cmd("sh r1");
+  CHECK(r.ev.lastInfo() == "I:R1=OFF");
+  r.cmd("r11");
+  r.cmd("sh r1");
+  CHECK(r.ev.lastInfo() == "I:R1=ON");
+  r.cmd("sh net");
+  CHECK(r.ev.lastInfo() == "E: sh param not recognized");
+  struct X : DCmdExtra {
+    bool extraShow(const std::string& w, std::string& o) override {
+      if (w != "net") return false;
+      o = "SSID=x";
+      return true;
+    }
+  } x;
+  r.b.commands().setExtra(&x);
+  r.cmd("sh net");
+  CHECK(r.ev.lastInfo() == "SSID=x");
+  r.cmd("devtype=pump");
+  CHECK(std::string(r.b.type()) == "pump");
+  r.cmd("mbtcp=1;");
+  CHECK(r.s.mbtcp == 1 && r.ctx.saveWanted);
+  CHECK(r.b.commands().saveText().find("devType=pump") != std::string::npos);
+}
+
+static void defaultResetsAutomation() {
+  Rig r;
+  r.cmd("hotter=1");
+  r.cmd("lschm2=16");
+  r.cmd("aofs2=60");
+  r.cmd("ctempl=25");
+  r.cmd("tmatrix=5:30");
+  r.cmd("cschm1=3:1");
+  r.cmd("clevel1=150");
+  r.cmd("tz=5");
+  r.cmd("mbtcp=1");
+  r.cmd("devtype=pump");
+  r.cmd("r11");
+  r.cmd("r21");
+  r.ctx.saveWanted = false;
+  r.cmd("default=2");
+  CHECK(r.ev.lastInfo() == "E:params error" && r.s.hotter == 1);
+  r.cmd("default=1;");
+  const DSettings d;
+  CHECK(r.ev.lastInfo() == "N:default=1, automation reset" && r.ctx.saveWanted);
+  CHECK(r.s.hotter == 0 && r.s.lschm2 == 0 && r.s.aofs2 == 0 && r.s.ctempl == d.ctempl);
+  CHECK(r.s.tmatrix[5] == d.tmatrix[5] && r.s.cschm1 == d.cschm1 && r.s.clevel[0] == -128);
+  CHECK(!r.b.r1->isOn() && !r.b.r2->isOn());
+  CHECK(r.s.tz == 5 && r.s.mbtcp == 1 && std::string(r.s.devType) == "pump");  // not automation: kept
+}
+
+static void i2cPinSettings() {
+  Rig r;
+  struct X : DCmdExtra {
+    bool extraShow(const std::string&, std::string&) override { return false; }
+    bool pinBusy(long p, const std::string& n) override { return p == 5 || p > 15 || (n == "i2cscl" && p == 4); }
+  } x;
+  r.b.commands().setExtra(&x);
+  CHECK(r.s.i2csda == -1 && r.s.i2cscl == -1);
+  r.cmd("i2cscl=12;");
+  CHECK(r.s.i2cscl == 12 && r.ev.lastInfo() == "N:i2cscl=12, after reset" && r.ctx.saveWanted);
+  r.cmd("i2csda=5");
+  CHECK(r.s.i2csda == -1 && r.ev.lastInfo() == "E:pin busy");
+  r.cmd("i2cscl=4");  // the pin sda is on now
+  CHECK(r.s.i2cscl == 12 && r.ev.lastInfo() == "E:pin busy");
+  r.cmd("i2csda=12");
+  CHECK(r.s.i2csda == -1 && r.ev.lastInfo() == "E:pin busy");  // the same pin as scl
+  r.cmd("i2csda=40");
+  CHECK(r.s.i2csda == -1 && r.ev.lastInfo() == "E:params error");
+  r.cmd("i2csda=4");
+  CHECK(r.s.i2csda == 4);
+  r.cmd("i2cscl=-1");
+  CHECK(r.s.i2cscl == -1);
+  r.cmd("sh i2csda");
+  CHECK(r.ev.lastInfo() == "i2csda=4");
+  CHECK(r.b.commands().saveText().find("i2csda=4\ni2cscl=-1\n") != std::string::npos);
 }
 
 int main() {
@@ -620,6 +853,15 @@ int main() {
   legacySettings();
   legacyRealSample();
   settingsSurviveRestart();
+  medianFilter();
+  differenceOfTwo();
+  modbusAnswers();
+  pzemFrame();
+  buttonPresses();
+  ledPattern();
+  disabledRelayAndExtras();
+  i2cPinSettings();
+  defaultResetsAutomation();
   printf("%d checks, %d failed\n", gChecks, gFails);
   return gFails ? 1 : 0;
 }

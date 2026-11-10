@@ -80,12 +80,13 @@ class DRuleTemp : public DRule {
   virtual bool needOff(long t, long level, long delta) const = 0;
   virtual long level100() const { return dayNightLevel(); }
 
-  long dayNightLevel() const {
-    if (!ctx_.clock.hasTime()) return toLevel100(ctx_.s.ctempl);
+  long dayNightLevel() const { return toLevel100(dayNightSetting()); }
+  int32_t dayNightSetting() const {
+    if (!ctx_.clock.hasTime()) return ctx_.s.ctempl;
     switch (dscheme::at(ctx_, ctx_.s.onoffschm)) {
-      case dscheme::Hour::On: return toLevel100(ctx_.s.dtempl);
-      case dscheme::Hour::Off: return toLevel100(ctx_.s.ntempl);
-      default: return toLevel100(ctx_.s.ctempl);
+      case dscheme::Hour::On: return ctx_.s.dtempl;
+      case dscheme::Hour::Off: return ctx_.s.ntempl;
+      default: return ctx_.s.ctempl;
     }
   }
   long delta100() const { return toDelta100(ctx_.s.tdelta); }
@@ -103,10 +104,14 @@ class DRuleHotter : public DRuleTemp {
   const char* sensorErrorText() const override { return "hotter, sensor not ready"; }
   bool needOn(long t, long level) const override { return t < level; }
   bool needOff(long t, long level, long delta) const override { return t >= level + delta; }
-  long level100() const override {
-    if (ctx_.s.hotter != 2) return dayNightLevel();
-    if (!ctx_.clock.hasTime()) return toLevel100(ctx_.s.ctempl);
-    return toLevel100(ctx_.s.tmatrix[ctx_.clock.hour()]);
+  long level100() const override { return toLevel100(levelSetting()); }
+
+ public:
+  // the level as it is in the settings: "sh hot" shows it so
+  int32_t levelSetting() const {
+    if (ctx_.s.hotter != 2) return dayNightSetting();
+    if (!ctx_.clock.hasTime()) return ctx_.s.ctempl;
+    return ctx_.s.tmatrix[ctx_.clock.hour()];
   }
 };
 
@@ -131,7 +136,7 @@ class DRuleSchedule : public DRule {
   void loop() override {
     bool hadTime = hadTime_;
     hadTime_ = ctx_.clock.hasTime();
-    if (*scheme_ == 0) return;
+    if (*scheme_ <= 0) return;  // -128 is "never set" in old settings
     if (yields_ && (ctx_.s.hotter != 0 || ctx_.s.cooler != 0)) return;
     uint8_t h = ctx_.clock.hour();
     if (!hadTime && hadTime_ && *scheme_ == 2) relay_.setLastHourOn(h);  // the clock jumped: not a new hour

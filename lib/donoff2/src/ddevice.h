@@ -24,11 +24,7 @@ class DDevice : public DBase {
     lastRules_ = now;
     for (auto* r : rules_) r->loop();
     if (ctx_.saveWanted) {
-      ctx_.saveWanted = false;
-      if (storage_) {
-        bool ok = storage_->save(commands_.saveText());
-        ctx_.ev.log(ok ? "N:settings saved" : "E:settings not saved");
-      }
+      saveNow();
     }
   }
 
@@ -40,9 +36,15 @@ class DDevice : public DBase {
     return true;
   }
   void setStorage(DStorage* s) { storage_ = s; }
+  void saveNow() {
+    ctx_.saveWanted = false;
+    if (storage_) ctx_.ev.info(storage_->save(commands_.saveText()) ? "N: saved" : "E: not saved");
+  }
+  virtual void shortPress() {}  // the button; what it does depends on the board
   std::vector<DSensor*>& sensors() { return sensors_; }
   std::vector<DRelay*>& relays() { return relays_; }
-  const char* type() const { return name_; }
+  const char* type() const { return ctx_.s.devType[0] ? ctx_.s.devType : name_; }
+  virtual bool hasRs485() const { return false; }  // the portal shows the RTU fields
 
   DCommands& commands() { return commands_; }
   DValue* findValue(const char* n) {

@@ -5,7 +5,11 @@
 
 class DStorageLittleFS : public DStorage {
  public:
+#if defined(ESP8266)
   bool begin() { return LittleFS.begin(); }
+#else
+  bool begin() { return LittleFS.begin(true); }  // formats an empty partition
+#endif
 
   bool load(std::string& text) override {
     File f = LittleFS.open(kFile, "r");

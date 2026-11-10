@@ -1,6 +1,10 @@
 #pragma once
 #include <Arduino.h>
+#if defined(ESP8266)
 #include <coredecls.h>
+#else
+#include <esp_sntp.h>
+#endif
 #include <time.h>
 #include "../dbase.h"
 #include "../dsettings.h"
@@ -9,7 +13,12 @@ class DClockNtp : public DClock {
  public:
   void begin(int32_t tz) {
     tz_ = tz;
-    settimeofday_cb([this]() { lastSync_ = millis(); synced_ = true; });
+#if defined(ESP8266)
+    settimeofday_cb([this]() { synced(); });
+#else
+    self_ = this;
+    sntp_set_time_sync_notification_cb([](struct timeval*) { self_->synced(); });
+#endif
     apply();
   }
   void setTz(int32_t tz) {
@@ -32,6 +41,13 @@ class DClockNtp : public DClock {
     time_t t = time(nullptr);
     return localtime(&t);
   }
+  void synced() {
+    lastSync_ = millis();
+    synced_ = true;
+  }
+#if !defined(ESP8266)
+  static inline DClockNtp* self_ = nullptr;
+#endif
   void apply() { configTime(tz_ * 3600L, 0, "pool.ntp.org", "time.nist.gov"); }
   int32_t tz_ = 0;
   volatile uint32_t lastSync_ = 0;

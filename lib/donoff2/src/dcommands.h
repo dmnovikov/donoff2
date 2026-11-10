@@ -9,8 +9,30 @@
 #include "drule.h"
 #include "dsensor.h"
 
+// What only the board can answer: sh net, sh ip, sh pinset ...
+class DCmdExtra {
+ public:
+  virtual ~DCmdExtra() = default;
+  virtual bool extraShow(const std::string& what, std::string& out) = 0;
+  // taken on this board (also by the other I2C line), or not usable at all; name is the setting being changed
+  virtual bool pinBusy(long pin, const std::string& name) { return false; }
+};
+
 class DCommands : public DBase {
  public:
+  enum Kind : uint8_t { Plain, Scheme, Hotter, Cooler, Lschm1, RelayScheme, Pin };
+  struct Param {
+    const char* name;
+    const char* a1;
+    const char* a2;
+    int32_t* v;
+    int32_t lo, hi;
+    Kind kind;
+    int8_t relay = -1;   // RelayScheme: the relay that goes off when the scheme is set to 0
+    bool portal = false; // also a field of the setup portal
+    bool is(const std::string& n) const { return n == name || (a1 && n == a1) || (a2 && n == a2); }
+  };
+
   static constexpr uint32_t kFloodMs = 1000;
 
   DCommands(DContext& ctx, std::vector<DRelay*>& relays, std::vector<DSensor*>& sensors)
@@ -20,7 +42,7 @@ class DCommands : public DBase {
         {"aofs", "aofs1", nullptr, &s.aofs1, 0, 1200, Plain},
         {"aofs2", "a2ofs", nullptr, &s.aofs2, 0, 1200, Plain},
         {"lschm", "lschm1", "schm1", &s.lschm1, 0, 100, Lschm1},
-        {"lschm2", "l2schm", "schm2", &s.lschm2, 0, 100, Lschm2},
+        {"lschm2", "l2schm", "schm2", &s.lschm2, 0, 100, RelayScheme, 1},
         {"nosync1", nullptr, nullptr, &s.nosync1, 0, 1, Plain},
         {"nosync2", nullptr, nullptr, &s.nosync2, 0, 1, Plain},
         {"hotter", "h", nullptr, &s.hotter, 0, 255, Hotter},
@@ -36,8 +58,21 @@ class DCommands : public DBase {
         {"clevel2", nullptr, nullptr, &s.clevel[1], -32000, 32000, Plain},
         {"clevel3", nullptr, nullptr, &s.clevel[2], -32000, 32000, Plain},
         {"clevel4", nullptr, nullptr, &s.clevel[3], -32000, 32000, Plain},
+        {"mbtcp", nullptr, nullptr, &s.mbtcp, 0, 1, Plain, -1, true},
+        {"mbport", nullptr, nullptr, &s.mbport, 1, 65535, Plain, -1, true},
+        {"mbunit", nullptr, nullptr, &s.mbunit, 1, 247, Plain, -1, true},
+        {"rtubaud", nullptr, nullptr, &s.rtubaud, 1200, 115200, Plain},
+        {"rtuparity", nullptr, nullptr, &s.rtuparity, 0, 2, Plain},
+        {"rtustop", nullptr, nullptr, &s.rtustop, 1, 2, Plain},
+        {"rtuaddr", nullptr, nullptr, &s.rtuaddr, 1, 247, Plain},
+        {"i2csda", nullptr, nullptr, &s.i2csda, -1, 39, Pin},
+        {"i2cscl", nullptr, nullptr, &s.i2cscl, -1, 39, Pin},
     };
   }
+
+  void addParam(const Param& p) { table_.push_back(p); }
+  void setExtra(DCmdExtra* e) { extra_ = e; }
+  std::vector<Param>& params() { return table_; }
 
   // The settings as text, "name=value" per line: a new parameter moves nothing in the file.
   std::string saveText() const {
@@ -47,7 +82,7 @@ class DCommands : public DBase {
     t += "cschm1=" + std::to_string(s.cschm1) + "\ncschm2=" + std::to_string(s.cschm2) + "\ntmatrix=";
     for (int i = 0; i < 24; i++) t += (i ? "," : "") + std::to_string(s.tmatrix[i]);
     t += "\n";
-    t += std::string("mqttServer=") + s.mqttServer + "\nmqttUser=" + s.mqttUser + "\nmqttPass=" + s.mqttPass + "\nmqttPort=" + s.mqttPort + "\ndevId=" + s.devId + "\nemail=" + s.email + "\n";
+    t += std::string("mqttServer=") + s.mqttServer + "\nmqttUser=" + s.mqttUser + "\nmqttPass=" + s.mqttPass + "\nmqttPort=" + s.mqttPort + "\ndevId=" + s.devId + "\nemail=" + s.email + "\ndevType=" + s.devType + "\n";
     return t;
   }
 
@@ -97,17 +132,6 @@ class DCommands : public DBase {
   }
 
  private:
-  enum Kind : uint8_t { Plain, Scheme, Hotter, Cooler, Lschm1, Lschm2 };
-  struct Param {
-    const char* name;
-    const char* a1;
-    const char* a2;
-    int32_t* v;
-    int32_t lo, hi;
-    Kind kind;
-    bool is(const std::string& n) const { return n == name || (a1 && n == a1) || (a2 && n == a2); }
-  };
-
   void loadLine(const std::string& k, const std::string& v) {
     DSettings& s = ctx_.s;
     long n;
@@ -125,6 +149,7 @@ class DCommands : public DBase {
     else if (k == "mqttPort") copy(s.mqttPort, v);
     else if (k == "devId") copy(s.devId, v);
     else if (k == "email") copy(s.email, v);
+    else if (k == "devType") copy(s.devType, v);
   }
 
   void loadMatrix(const std::string& v) {
@@ -168,9 +193,44 @@ class DCommands : public DBase {
     if (name == "cschm2") return setCustom(ctx_.s.cschm2, "N:CCSCM2", val);
     if (name == "om1") return setBits(ctx_.s.cschm1, val);
     if (name == "om2") return setBits(ctx_.s.cschm2, val);
-    if (name == "email") return setEmail(val);
+    if (name == "email") return setText(ctx_.s.email, sizeof ctx_.s.email, "email", val);
+    if (name == "devtype") return setText(ctx_.s.devType, sizeof ctx_.s.devType, "devtype", val);
+    if (name == "default") return setDefault(val);
     ctx_.ev.info("E:Varable error");
     return false;
+  }
+
+  // default=1: every automation back to the defaults, all relays off. The connection, the name, tz,
+  // autoreboot, Modbus and the I2C pins stay.
+  bool setDefault(const std::string& val) {
+    if (val != "1") {
+      ctx_.ev.info("E:params error");
+      return false;
+    }
+    DSettings& s = ctx_.s;
+    const DSettings d;
+    s.aofs1 = d.aofs1;
+    s.aofs2 = d.aofs2;
+    s.lschm1 = d.lschm1;
+    s.lschm2 = d.lschm2;
+    s.nosync1 = d.nosync1;
+    s.nosync2 = d.nosync2;
+    s.nosync3 = d.nosync3;
+    s.nosync4 = d.nosync4;
+    s.hotter = d.hotter;
+    s.cooler = d.cooler;
+    s.ctempl = d.ctempl;
+    s.dtempl = d.dtempl;
+    s.ntempl = d.ntempl;
+    s.tdelta = d.tdelta;
+    s.onoffschm = d.onoffschm;
+    s.cschm1 = d.cschm1;
+    s.cschm2 = d.cschm2;
+    for (int i = 0; i < 4; i++) s.clevel[i] = d.clevel[i];
+    for (int i = 0; i < 24; i++) s.tmatrix[i] = d.tmatrix[i];
+    for (auto* r : relays_) r->off("default");
+    say("N:default=1, automation reset");
+    return true;
   }
 
   bool setParam(Param& p, const std::string& name, const std::string& val) {
@@ -179,36 +239,43 @@ class DCommands : public DBase {
       ctx_.ev.info(p.hi == 1 ? "E:not set, 01 wait" : "E:not set, INT wait");
       return false;
     }
-    if (v < p.lo || v > p.hi || ((p.kind == Lschm1 || p.kind == Lschm2 || p.kind == Scheme) && !dscheme::valid(v))) {
+    if (v < p.lo || v > p.hi || ((p.kind == Lschm1 || p.kind == RelayScheme || p.kind == Scheme) && !dscheme::valid(v))) {
       ctx_.ev.info("E:params error");
       return false;
     }
+    if (p.kind == Pin && v >= 0) {
+      int32_t other = p.v == &ctx_.s.i2csda ? ctx_.s.i2cscl : ctx_.s.i2csda;
+      if (v == other || (extra_ && extra_->pinBusy(v, name))) {
+        ctx_.ev.info("E:pin busy");
+        return false;
+      }
+    }
     *p.v = v;
-    apply(p.kind, v);
-    say("N:" + name + "=" + std::to_string(v));
+    apply(p, v);
+    say("N:" + name + "=" + std::to_string(v) + (p.kind == Pin ? ", after reset" : ""));
     return true;
   }
 
-  void apply(Kind k, long v) {
+  void apply(const Param& p, long v) {
     DSettings& s = ctx_.s;
-    switch (k) {
+    switch (p.kind) {
       case Hotter:
         if (v == 1 || v == 2) {
           s.lschm1 = s.aofs1 = s.cooler = 0;
         } else if (v == 0) {
-          relayOff(0, "hotter=0");
+          relayOff(0, "from publisher");
         }
         break;
       case Cooler:
         if (v) s.lschm1 = s.aofs1 = s.hotter = 0;
-        else relayOff(0, "cooler=0");
+        else relayOff(0, "from publisher");
         break;
       case Lschm1:
         if (v > 0) s.hotter = s.cooler = 0;
         else relayOff(0, "lschm or hotter=0");
         break;
-      case Lschm2:
-        if (v == 0) relayOff(1, "lschm or hotter=0");
+      case RelayScheme:
+        if (v == 0) relayOff(p.relay, "lschm or hotter=0");
         break;
       default:
         break;
@@ -265,13 +332,13 @@ class DCommands : public DBase {
     return true;
   }
 
-  bool setEmail(const std::string& val) {
-    if (val.size() >= sizeof ctx_.s.email) {
+  bool setText(char* to, size_t n, const char* name, const std::string& val) {
+    if (val.size() >= n) {
       ctx_.ev.info("E:params error");
       return false;
     }
-    strcpy(ctx_.s.email, val.c_str());
-    say("N:email=" + val);
+    strcpy(to, val.c_str());
+    say(std::string("N:") + name + "=" + val);
     return true;
   }
 
@@ -304,10 +371,20 @@ class DCommands : public DBase {
     else if (what == "cschm1") say(bitsText(s.cschm1));
     else if (what == "cschm2") say(bitsText(s.cschm2));
     else if (what == "email") say(std::string("email=") + s.email);
-    else if (what.size() == 2 && what[0] == 'r' && what[1] >= '1' && (size_t)(what[1] - '1') < relays_.size())
-      say(what + "=" + std::to_string(relays_[what[1] - '1']->isOn()));
+    else if (what == "devtype") say(std::string("devtype=") + s.devType);
+    else if (what == "salt") say("salt=1206");
+    else if (what.rfind("bschm", 0) == 0) ctx_.ev.info("depricated!");
+    else if (what.size() == 2 && what[0] == 'r' && what[1] >= '1' && what[1] <= '9') {
+      size_t i = what[1] - '1';
+      std::string tag = "I:R" + std::string(1, what[1]) + "=";
+      say(tag + (i >= relays_.size() ? "DISABLED" : relays_[i]->isOn() ? "ON" : "OFF"));
+    }
     else if (what == "all") ctx_.ev.log(allJson().c_str());
-    else return false;
+    else {
+      std::string out;
+      if (!extra_ || !extra_->extraShow(what, out)) return false;
+      if (!out.empty()) say(out);
+    }
     return true;
   }
 
@@ -332,20 +409,29 @@ class DCommands : public DBase {
       return true;
     }
     if (in == "reset") {
+      ctx_.ev.info("I: OK, LET'S RESET");
       ctx_.rebootWanted = true;
       return true;
     }
     if (in == "resethour1" || in == "resethour2") {
       size_t i = in.back() - '1';
-      if (i >= relays_.size()) return false;
+      std::string tag = std::string("I:R") + in.back();
+      if (i >= relays_.size()) {
+        say(tag + "=DISABLED");
+        return true;
+      }
       relays_[i]->resetLastHourOn();
+      say(std::string("I: R") + in.back() + " lschm last hour is reseted");
       return true;
     }
-    if (in.size() == 3 && in[0] == 'r' && in[1] >= '1' && (in[2] == '0' || in[2] == '1')) {
+    if (in.size() == 3 && in[0] == 'r' && in[1] >= '1' && in[1] <= '9' && (in[2] == '0' || in[2] == '1')) {
       size_t i = in[1] - '1';
-      if (i >= relays_.size()) return false;
-      if (in[2] == '1') relays_[i]->on("");
-      else relays_[i]->off("");
+      if (i >= relays_.size()) {
+        say(std::string("I:R") + in[1] + "=DISABLED");
+        return true;
+      }
+      if (in[2] == '1') relays_[i]->on("from publisher");
+      else relays_[i]->off("from publisher");
       return true;
     }
     return false;
@@ -354,6 +440,7 @@ class DCommands : public DBase {
   std::vector<DRelay*>& relays_;
   std::vector<DSensor*>& sensors_;
   std::vector<Param> table_;
+  DCmdExtra* extra_ = nullptr;
   uint32_t lastCmd_ = 0;
   bool commanded_ = false;
 };
