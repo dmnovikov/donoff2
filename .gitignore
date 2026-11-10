@@ -1,0 +1,5 @@
+.pio/
+.vscode/
+test/bin/
+*.creds
+creds.h
