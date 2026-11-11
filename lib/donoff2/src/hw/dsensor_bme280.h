@@ -10,7 +10,7 @@ class DSensorBME280 : public DSensorI2C {
       : DSensorI2C(ctx, "bme", 5000, 0, 0, sda, scl, 0x76, 0x77) {
     value(addValue("bme_temp", 100, "C", mbReg, 8)).key = "temp";
     value(addValue("bme_humidity", 100, "%", mbReg + 3, 6)).key = "humidity";
-    value(addValue("bme_pressure", 100, "hPa", mbReg + 6, 11)).key = "pressure";
+    value(addValue("bme_pressure", 100, "hPa", mbReg + 6, 15)).key = "pressure";
     value(0).label = "BME_TEMP";
     value(1).label = "BME_HUMIDITY";
     value(2).label = "BME_PRESSURE";

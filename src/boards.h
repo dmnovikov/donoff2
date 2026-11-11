@@ -8,6 +8,7 @@
 #include <hw/dsensor_bme280.h>
 #include <hw/dsensor_dht.h>
 #include <hw/dsensor_ds18b20.h>
+#include <hw/dsensor_jsy.h>
 #include <hw/dsensor_max44009.h>
 #include <hw/dsensor_pzem.h>
 #include <hw/dsensor_sct013.h>
@@ -24,6 +25,7 @@ enum : uint16_t {
   Sct3 = 63,        // 4 values: 63..74
   Temps = 75,       // 5 values: 75..89
   Bme = 90,         // 3 values: 90..98
+  Jsy = 99,         // 6 values: 99..116
 };
 }
 
@@ -47,6 +49,14 @@ struct DPins {
 #ifndef I2C_SCL
 #define I2C_SCL 13
 #endif
+// The UART of RTU sensors (the receive and the transmit pin of the ESP): GPIO13 (D7) and GPIO12 (D6) by default,
+// the settings rturx and rtutx move it on a device.
+#ifndef RTU_RX
+#define RTU_RX 13
+#endif
+#ifndef RTU_TX
+#define RTU_TX 12
+#endif
 
 class DBoard : public DDevice, public DCmdExtra {
  public:
@@ -56,7 +66,13 @@ class DBoard : public DDevice, public DCmdExtra {
   const DPins& pins() const { return pins_; }
 
   bool pinBusy(long p, const std::string& name) override {
-    if ((name == "i2cscl" && p == sda_) || (name == "i2csda" && p == scl_)) return true;
+    // the other bus lines where they will be after a reset: their setting, or where they are now
+    const DSettings& s = ctx_.s;
+    auto next = [](int32_t set, int now) { return set >= 0 ? (int)set : now; };
+    const struct { const char* n; int pin; } bus[] = {{"i2csda", next(s.i2csda, sda_)}, {"i2cscl", next(s.i2cscl, scl_)},
+                                                      {"rturx", next(s.rturx, rx_)}, {"rtutx", next(s.rtutx, tx_)}};
+    for (auto& b : bus)
+      if (name != b.n && p == b.pin) return true;
     return pinBusy(p);
   }
   bool pinBusy(long p) {
@@ -74,6 +90,7 @@ class DBoard : public DDevice, public DCmdExtra {
     else if (what == "pinset") out = pins_.pinset;
     else if (what == "dinfo") out = info_;
     else if (what == "i2c") out = "i2c sda=" + std::to_string(sda_) + " scl=" + std::to_string(scl_);
+    else if (what == "rtu") out = "rtu rx=" + std::to_string(rx_) + " tx=" + std::to_string(tx_);
     else if (what == "cmpl")
       out = std::string("cmpl=R2:") + (relays_.size() > 1 ? "1" : "0") + ";DS_OUT:" + (findValue("temp_out") ? "1" : "0") + ";DS_INT:" + (findValue("temp_in") ? "1" : "0") + ";";
     else return false;
@@ -82,17 +99,22 @@ class DBoard : public DDevice, public DCmdExtra {
 
  protected:
   static std::string str(const String& s) { return s.c_str(); }
-  // The I2C pins: the setting if it is usable on this board, otherwise the default of the board.
-  uint8_t i2cPin(int32_t set, uint8_t def, bool sda) {
+  // A bus pin: the setting if it is usable on this board, otherwise the default of the board.
+  uint8_t busPin(int32_t set, uint8_t def, int& used, const char* name) {
     uint8_t p = def;
     if (set >= 0 && !pinBusy(set)) p = (uint8_t)set;
-    else if (set >= 0) ctx_.ev.log("E:i2c pin busy, default used");
-    (sda ? sda_ : scl_) = p;
+    else if (set >= 0) {
+      std::string t = std::string("E:") + name + " pin busy, default used";
+      ctx_.ev.log(t.c_str());
+    }
+    used = p;
     return p;
   }
-  uint8_t sda(uint8_t def = I2C_SDA) { return i2cPin(ctx_.s.i2csda, def, true); }
-  uint8_t scl(uint8_t def = I2C_SCL) { return i2cPin(ctx_.s.i2cscl, def, false); }
-  int sda_ = -1, scl_ = -1;
+  uint8_t sda(uint8_t def = I2C_SDA) { return busPin(ctx_.s.i2csda, def, sda_, "i2csda"); }
+  uint8_t scl(uint8_t def = I2C_SCL) { return busPin(ctx_.s.i2cscl, def, scl_, "i2cscl"); }
+  uint8_t rtuRx(uint8_t def = RTU_RX) { return busPin(ctx_.s.rturx, def, rx_, "rturx"); }
+  uint8_t rtuTx(uint8_t def = RTU_TX) { return busPin(ctx_.s.rtutx, def, tx_, "rtutx"); }
+  int sda_ = -1, scl_ = -1, rx_ = -1, tx_ = -1;
   DPins pins_;
   const char* info_;
 };
@@ -100,7 +122,13 @@ class DBoard : public DDevice, public DCmdExtra {
 // Only sensors, the button only opens the portal.
 class BoardCollector : public DBoard {
  public:
-  using DBoard::DBoard;
+  BoardCollector(DContext& c, const char* type, const char* info, const DPins& p) : DBoard(c, type, info, sensorsOnly(p)) {}
+
+ private:
+  static DPins sensorsOnly(DPins p) {  // no relays and no socket DS18B20: those pins are free for the buses
+    p.r1 = p.r2 = p.tIn = p.tOut = -1;
+    return p;
+  }
 };
 
 // donoff: relay 1, relay 2, two DS18B20, thermostat and schedules. Others extend it.
@@ -315,7 +343,20 @@ class BoardPzem : public BoardCollector {
   BoardPzem(DContext& c, const DPins& p) : BoardCollector(c, "sensor", "SUPPLY_PZEM004", p) {}
 
  protected:
-  void build() override { sensors_.push_back(new DSensorPZEM(ctx_, 13, 12, dreg::Pzem)); }
+  void build() override { sensors_.push_back(new DSensorPZEM(ctx_, rtuRx(), rtuTx(), dreg::Pzem)); }
+};
+
+// JSY-MK-163 / JSY1003F; port, pins and address from the settings.
+class BoardJsy : public BoardCollector {
+ public:
+  BoardJsy(DContext& c, const DPins& p) : BoardCollector(c, "sensor", "SUPPLY_JSY", p) {}
+
+ protected:
+  void build() override {
+    const DSettings& s = ctx_.s;
+    DSensorRTU::Port port{rtuRx(), rtuTx(), (uint32_t)s.rtubaud, (uint8_t)s.rtuparity, (uint8_t)s.rtustop};
+    sensors_.push_back(new DSensorJSY(ctx_, port, (uint8_t)s.rtuaddr, dreg::Jsy));
+  }
 };
 
 class BoardSct013 : public BoardCollector {

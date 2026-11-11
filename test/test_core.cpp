@@ -12,6 +12,7 @@
 #include "dlegacy.h"
 #include "doutput_modbus.h"
 #include "dpzem.h"
+#include "djsy.h"
 
 static int gFails = 0, gChecks = 0;
 #define CHECK(c)                                              \
@@ -715,6 +716,39 @@ static DButton::Press hold(Bed& e, FakeButton& b, uint32_t ms) {
   return p;
 }
 
+static void rtuAndJsy() {
+  uint8_t q[8];
+  drtu::makeRead(1, 3, 72, 10, q);
+  const uint8_t want[] = {0x01, 0x03, 0x00, 0x48, 0x00, 0x0A};
+  CHECK(memcmp(q, want, 6) == 0);
+  CHECK(dCrc16(q, 8) == 0);  // a frame with its CRC gives 0
+  // an answer: 230.12 V, 1.234 A, 345.6 W, 32000 pulses = 10 kWh, pf 0.950, 50.01 Hz
+  uint16_t regs[10] = {23012, 1234, 3456, 0, 32000, 950, 0, 0, 25, 5001};
+  uint8_t a[25] = {0x01, 0x03, 20};
+  for (int i = 0; i < 10; i++) {
+    a[3 + 2 * i] = regs[i] >> 8;
+    a[4 + 2 * i] = regs[i] & 0xFF;
+  }
+  uint16_t c = dCrc16(a, 23);
+  a[23] = c & 0xFF;
+  a[24] = c >> 8;
+  uint16_t got[10];
+  CHECK(drtu::parseRead(a, 25, 1, 3, 10, got) && got[9] == 5001);
+  djsy::Reading x;
+  djsy::decode(got, x);
+  CHECK(x.voltage100 == 23012 && x.current1000 == 1234 && x.power10 == 3456 && x.pf1000 == 950 && x.freq100 == 5001);
+  CHECK(x.energy > 9.999f && x.energy < 10.001f);
+  got[3] = 1;  // the high word of the energy
+  djsy::decode(got, x);
+  CHECK(x.energy > 30.47f && x.energy < 30.49f);  // (65536 + 32000) / 3200
+  CHECK(!drtu::parseRead(a, 25, 2, 3, 10, got));  // another address
+  CHECK(!drtu::parseRead(a, 24, 1, 3, 10, got));
+  a[10] ^= 1;
+  CHECK(!drtu::parseRead(a, 25, 1, 3, 10, got));  // CRC
+  const uint8_t ex[] = {0x01, 0x83, 0x02, 0xC0, 0xF1};  // an exception answer
+  CHECK(!drtu::parseRead(ex, 5, 1, 3, 10, got));
+}
+
 static void buttonPresses() {
   Bed e;
   FakeButton b(e.ctx, "b");
@@ -823,6 +857,14 @@ static void i2cPinSettings() {
   r.cmd("sh i2csda");
   CHECK(r.ev.lastInfo() == "i2csda=4");
   CHECK(r.b.commands().saveText().find("i2csda=4\ni2cscl=-1\n") != std::string::npos);
+  r.cmd("rturx=4");  // i2csda has it
+  CHECK(r.s.rturx == -1 && r.ev.lastInfo() == "E:pin busy");
+  r.cmd("rturx=12;");
+  CHECK(r.s.rturx == 12 && r.ev.lastInfo() == "N:rturx=12, after reset");
+  r.cmd("rtutx=12");
+  CHECK(r.s.rtutx == -1 && r.ev.lastInfo() == "E:pin busy");
+  r.cmd("rtutx=13");
+  CHECK(r.s.rtutx == 13);
 }
 
 int main() {
@@ -857,6 +899,7 @@ int main() {
   differenceOfTwo();
   modbusAnswers();
   pzemFrame();
+  rtuAndJsy();
   buttonPresses();
   ledPattern();
   disabledRelayAndExtras();

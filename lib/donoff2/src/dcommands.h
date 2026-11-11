@@ -14,7 +14,7 @@ class DCmdExtra {
  public:
   virtual ~DCmdExtra() = default;
   virtual bool extraShow(const std::string& what, std::string& out) = 0;
-  // taken on this board (also by the other I2C line), or not usable at all; name is the setting being changed
+  // taken on this board (also by a bus line in use), or not usable at all; name is the pin setting being changed
   virtual bool pinBusy(long pin, const std::string& name) { return false; }
 };
 
@@ -67,6 +67,8 @@ class DCommands : public DBase {
         {"rtuaddr", nullptr, nullptr, &s.rtuaddr, 1, 247, Plain},
         {"i2csda", nullptr, nullptr, &s.i2csda, -1, 39, Pin},
         {"i2cscl", nullptr, nullptr, &s.i2cscl, -1, 39, Pin},
+        {"rturx", nullptr, nullptr, &s.rturx, -1, 39, Pin},
+        {"rtutx", nullptr, nullptr, &s.rtutx, -1, 39, Pin},
     };
   }
 
@@ -244,8 +246,10 @@ class DCommands : public DBase {
       return false;
     }
     if (p.kind == Pin && v >= 0) {
-      int32_t other = p.v == &ctx_.s.i2csda ? ctx_.s.i2cscl : ctx_.s.i2csda;
-      if (v == other || (extra_ && extra_->pinBusy(v, name))) {
+      bool taken = false;  // another pin setting has it
+      for (auto& q : table_)
+        if (q.kind == Pin && q.v != p.v && *q.v == v) taken = true;
+      if (taken || (extra_ && extra_->pinBusy(v, p.name))) {
         ctx_.ev.info("E:pin busy");
         return false;
       }

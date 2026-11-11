@@ -23,6 +23,7 @@ struct DSettings {
   int32_t mbtcp = 0, mbport = 502, mbunit = 1;               // Modbus TCP, read only
   int32_t rtubaud = 9600, rtuparity = 0, rtustop = 1, rtuaddr = 1;  // Modbus RTU: only stored for now
   int32_t i2csda = -1, i2cscl = -1;    // the I2C bus, -1 = what the board says; used after a restart
+  int32_t rturx = -1, rtutx = -1;      // the UART of RTU sensors (pins of the ESP), the same way
   int32_t clevel[4] = {-128, -128, -128, -128};  // what they mean is up to the board
   uint32_t cschm1 = 0b000000000011111111111100;  // bit (23 - h) is hour h
   uint32_t cschm2 = 0b111111111111100000000000;
