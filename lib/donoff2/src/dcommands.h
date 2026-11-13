@@ -54,6 +54,7 @@ class DCommands : public DBase {
         {"onoffschm1", nullptr, nullptr, &s.onoffschm, 0, 100, Scheme},
         {"tz", nullptr, nullptr, &s.tz, -15, 15, Plain},
         {"autoreboot", nullptr, nullptr, &s.autoreboot, 0, 1, Plain},
+        {"mqttlocal", nullptr, nullptr, &s.mqttlocal, 0, 1, Plain},
         {"clevel1", nullptr, nullptr, &s.clevel[0], -32000, 32000, Plain},
         {"clevel2", nullptr, nullptr, &s.clevel[1], -32000, 32000, Plain},
         {"clevel3", nullptr, nullptr, &s.clevel[2], -32000, 32000, Plain},
@@ -198,6 +199,7 @@ class DCommands : public DBase {
     if (name == "email") return setText(ctx_.s.email, sizeof ctx_.s.email, "email", val);
     if (name == "devtype") return setText(ctx_.s.devType, sizeof ctx_.s.devType, "devtype", val);
     if (name == "default") return setDefault(val);
+    if (name == "mqttserver") return setBroker(val);
     ctx_.ev.info("E:Varable error");
     return false;
   }
@@ -336,6 +338,26 @@ class DCommands : public DBase {
     return true;
   }
 
+  // mqttserver=host or host:port: the broker of the next start (save with ";" or "save", then "reset").
+  bool setBroker(const std::string& val) {
+    std::string host = val, port = ctx_.s.mqttPort;
+    size_t c = val.rfind(':');
+    if (c != std::string::npos) {
+      host = val.substr(0, c);
+      port = val.substr(c + 1);
+    }
+    long n;
+    if (host.empty() || host.size() >= sizeof ctx_.s.mqttServer || host.find_first_of(" \t/") != std::string::npos ||
+        !toInt(port, &n) || n < 1 || n > 65535) {
+      ctx_.ev.info("E:params error");
+      return false;
+    }
+    strcpy(ctx_.s.mqttServer, host.c_str());
+    strcpy(ctx_.s.mqttPort, std::to_string(n).c_str());
+    say("N:mqttserver=" + host + ":" + std::to_string(n) + ", after reset");
+    return true;
+  }
+
   bool setText(char* to, size_t n, const char* name, const std::string& val) {
     if (val.size() >= n) {
       ctx_.ev.info("E:params error");
@@ -377,6 +399,7 @@ class DCommands : public DBase {
     else if (what == "email") say(std::string("email=") + s.email);
     else if (what == "devtype") say(std::string("devtype=") + s.devType);
     else if (what == "salt") say("salt=1206");
+    else if (what == "mqtt") say("I:mqtt=" + ctx_.broker);
     else if (what.rfind("bschm", 0) == 0) ctx_.ev.info("depricated!");
     else if (what.size() == 2 && what[0] == 'r' && what[1] >= '1' && what[1] <= '9') {
       size_t i = what[1] - '1';

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ddevice.h"
+#include "dbroker.h"
 #include "dbutton.h"
 #include "dled.h"
 #include "dlegacy.h"
@@ -832,6 +833,72 @@ static void defaultResetsAutomation() {
   CHECK(r.s.tz == 5 && r.s.mbtcp == 1 && std::string(r.s.devType) == "pump");  // not automation: kept
 }
 
+static void brokerPick() {
+  DBrokerPick b;
+  b.configure(true, "mqtt.lab240.ru", 1883);
+  uint32_t t = 1000;
+  // found: connect there
+  CHECK(b.beforeConnect(t));
+  b.searched(true, "192.168.30.52", 1883, t);
+  CHECK(b.useLocal() && b.host() == "192.168.30.52" && b.port() == 1883);
+  b.connected(true);
+  CHECK(b.text() == "local 192.168.30.52:1883" && !b.recheckDue(t + DBrokerPick::kRecheckMs));
+  // the local one is gone: the next search finds nothing, the global one
+  b.lost();
+  CHECK(b.text() == "offline" && b.beforeConnect(t += 10000));
+  b.searched(false, "", 0, t);
+  CHECK(!b.useLocal() && b.host() == "mqtt.lab240.ru");
+  b.connected(true);
+  CHECK(b.text() == "global mqtt.lab240.ru:1883");
+  // on the global one: recheck after 5 minutes, switch when the local one is back
+  CHECK(!b.recheckDue(t + 1000) && b.recheckDue(t + DBrokerPick::kRecheckMs));
+  t += DBrokerPick::kRecheckMs;
+  b.searched(true, "192.168.30.52", 1883, t);
+  CHECK(b.switchWanted());
+  // it answers the search but refuses the connection 3 times: global until the next recheck
+  b.lost();
+  for (int i = 0; i < 3; i++) {
+    CHECK(b.beforeConnect(t += 10000));
+    b.searched(true, "192.168.30.52", 1883, t);
+    CHECK(b.useLocal());
+    b.connected(false);
+  }
+  CHECK(!b.beforeConnect(t += 10000) && !b.useLocal() && b.host() == "mqtt.lab240.ru");
+  b.connected(true);
+  CHECK(b.text() == "global mqtt.lab240.ru:1883" && !b.switchWanted());
+  CHECK(b.recheckDue(t - 10000 + DBrokerPick::kRecheckMs));
+  {
+    DBrokerPick c = b;  // the recheck on the global one finds the local one again: move there
+    c.searched(true, "192.168.30.52", 1883, t - 10000 + DBrokerPick::kRecheckMs);
+    CHECK(c.useLocal() && c.switchWanted());
+  }
+  CHECK(b.beforeConnect(t + DBrokerPick::kRecheckMs));  // the skip is over
+  // switched off: never search, always the broker of the settings
+  DBrokerPick off;
+  off.configure(false, "mqtt.lab240.ru", 1883);
+  CHECK(!off.beforeConnect(1));
+  off.searched(true, "192.168.30.52", 1883, 1);
+  CHECK(!off.useLocal() && off.host() == "mqtt.lab240.ru");
+  off.connected(true);
+  CHECK(!off.recheckDue(DBrokerPick::kRecheckMs * 2) && off.text() == "global mqtt.lab240.ru:1883");
+}
+
+static void brokerCommand() {
+  Rig r;
+  r.cmd("mqttserver=192.168.30.52;");
+  CHECK(std::string(r.s.mqttServer) == "192.168.30.52" && std::string(r.s.mqttPort) == "1883");
+  CHECK(r.ev.lastInfo() == "N:mqttserver=192.168.30.52:1883, after reset" && r.ctx.saveWanted);
+  r.cmd("mqttserver=mqtt.lab240.ru:1884");
+  CHECK(std::string(r.s.mqttServer) == "mqtt.lab240.ru" && std::string(r.s.mqttPort) == "1884");
+  for (const char* bad : {"mqttserver=", "mqttserver=a:0", "mqttserver=a:x", "mqttserver=a b", "mqttserver=:1883",
+                          "mqttserver=0123456789012345678901234567890123"}) {
+    r.cmd(bad);
+    CHECK(r.ev.lastInfo() == "E:params error");
+  }
+  CHECK(std::string(r.s.mqttServer) == "mqtt.lab240.ru" && std::string(r.s.mqttPort) == "1884");
+  CHECK(r.b.commands().saveText().find("mqttServer=mqtt.lab240.ru\n") != std::string::npos);
+}
+
 static void i2cPinSettings() {
   Rig r;
   struct X : DCmdExtra {
@@ -904,6 +971,8 @@ int main() {
   ledPattern();
   disabledRelayAndExtras();
   i2cPinSettings();
+  brokerCommand();
+  brokerPick();
   defaultResetsAutomation();
   printf("%d checks, %d failed\n", gChecks, gFails);
   return gFails ? 1 : 0;

@@ -1,5 +1,6 @@
 // The root of the donoff2 classes: everything a class needs from the device comes through DContext.
 #pragma once
+#include <string>
 #include <stdint.h>
 
 struct DSettings;
@@ -50,6 +51,7 @@ struct DContext {
   DEvents& ev;
   bool saveWanted = false;
   bool rebootWanted = false;
+  std::string broker = "offline";  // where MQTT goes: "local ip:port", "global host:port", "offline"
 };
 
 class DBase {

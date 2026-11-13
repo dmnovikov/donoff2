@@ -20,6 +20,7 @@ struct DSettings {
   int32_t onoffschm = 99;                // the scheme that says what is day and what is night
   int32_t tz = 3;
   int32_t autoreboot = 0;
+  int32_t mqttlocal = 1;                // look for the local broker of the site (mDNS) before mqttServer
   int32_t mbtcp = 0, mbport = 502, mbunit = 1;               // Modbus TCP, read only
   int32_t rtubaud = 9600, rtuparity = 0, rtustop = 1, rtuaddr = 1;  // Modbus RTU: only stored for now
   int32_t i2csda = -1, i2cscl = -1;    // the I2C bus, -1 = what the board says; used after a restart

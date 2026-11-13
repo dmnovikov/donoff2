@@ -1,4 +1,5 @@
 // The topics of donoff-lib, plus two new ones: out/meta (what the device is) and out/status (Last Will).
+// The broker: the local one of the site when mDNS finds it (mqttlocal=1), otherwise mqttServer; see dbroker.h.
 #pragma once
 #include "dplatform.h"
 #include <PubSubClient.h>
@@ -6,7 +7,9 @@
 #include <string>
 #include <time.h>
 #include <vector>
+#include "../dbroker.h"
 #include "../doutput.h"
+#include "dbroker_mdns.h"
 
 class DOutputMQTT : public DOutput, public DEvents {
  public:
@@ -15,7 +18,7 @@ class DOutputMQTT : public DOutput, public DEvents {
   void begin() override {
     DSettings& s = ctx_.s;
     base_ = std::string("/") + s.mqttUser + "/" + s.devId + "/";
-    mqtt_.setServer(s.mqttServer, atoi(s.mqttPort));
+    pick_.configure(s.mqttlocal != 0, s.mqttServer, atoi(s.mqttPort));
     mqtt_.setBufferSize(1024);
     mqtt_.setSocketTimeout(3);
     mqtt_.setCallback([this](char*, uint8_t* p, unsigned int n) {
@@ -26,17 +29,36 @@ class DOutputMQTT : public DOutput, public DEvents {
   void loop() override {
     uint32_t now = millis();
     bool online = WiFi.status() == WL_CONNECTED;
+    if (online) finder_.loop(ctx_.s.devId);
     if (!online || !mqtt_.connected()) {
+      if (up_) {
+        up_ = false;
+        pick_.lost();
+        ctx_.broker = pick_.text();
+      }
+      std::string ip;
+      uint16_t port = 0;
+      bool found = false;
+      if (finder_.busy()) {  // the search before this attempt
+        if (!online) finder_.stop();
+        else if (!finder_.done(ip, port, found)) return;
+        pick_.searched(found, ip, port, now);
+        attempt(online);
+        return;
+      }
       if (tried_ && now - lastTry_ < kRetryMs) return;
       tried_ = true;
       lastTry_ = now;
-      if (online) connect();
-      fails_ = online && mqtt_.connected() ? 0 : fails_ + 1;
-      if (fails_ > kFailsToReboot && ctx_.s.autoreboot) ctx_.rebootWanted = true;
+      if (online && pick_.beforeConnect(now)) {
+        if (finder_.start()) return;  // connect when the search is over
+        pick_.searched(false, ip, port, now);
+      }
+      attempt(online);
       return;
     }
     fails_ = 0;
     mqtt_.loop();
+    recheck(now);
     while (!inbox_.empty()) {
       std::string cmd = inbox_.front();
       inbox_.pop_front();
@@ -62,8 +84,40 @@ class DOutputMQTT : public DOutput, public DEvents {
     if (mqtt_.connected()) mqtt_.publish((base_ + sub).c_str(), v.c_str(), retain);
   }
 
+  void attempt(bool online) {
+    if (online) connect();
+    bool ok = online && mqtt_.connected();
+    pick_.connected(ok);
+    fails_ = ok ? 0 : fails_ + 1;
+    if (fails_ > kFailsToReboot && ctx_.s.autoreboot) ctx_.rebootWanted = true;
+    if (!ok) return;
+    up_ = true;
+    ctx_.broker = pick_.text();
+    ctx_.ev.log(("N:mqtt " + ctx_.broker).c_str());
+  }
+
+  // On the broker of the settings: now and then look for the local one, and move there when it is back.
+  void recheck(uint32_t now) {
+    std::string ip;
+    uint16_t port = 0;
+    bool found = false;
+    if (finder_.busy()) {
+      if (!finder_.done(ip, port, found)) return;
+      pick_.searched(found, ip, port, now);
+      if (!pick_.switchWanted()) return;
+      mqtt_.disconnect();
+      up_ = false;
+      pick_.lost();
+      attempt(true);
+      return;
+    }
+    if (pick_.recheckDue(now) && !finder_.start()) pick_.searched(false, ip, port, now);
+  }
+
   void connect() {
     DSettings& s = ctx_.s;
+    host_ = pick_.host();
+    mqtt_.setServer(host_.c_str(), pick_.port());
     std::string id = std::string("donoff2-") + s.devId;
     std::string will = base_ + "out/status";
     if (!mqtt_.connect(id.c_str(), s.mqttUser, s.mqttPass, will.c_str(), 0, true, "offline")) return;
@@ -147,9 +201,11 @@ class DOutputMQTT : public DOutput, public DEvents {
   const char* fw_;
   WiFiClient net_;
   PubSubClient mqtt_;
-  std::string base_;
+  std::string base_, host_;
+  DBrokerPick pick_;
+  DBrokerFinder finder_;
   std::deque<std::string> inbox_;
   std::vector<uint8_t> seen_;
   uint32_t lastTry_ = 0, lastPub_ = 0, fails_ = 0;
-  bool tried_ = false, published_ = false;
+  bool tried_ = false, published_ = false, up_ = false;
 };
