@@ -265,12 +265,18 @@ class BoardTempOdds : public BoardSocketDs2 {
   }
 };
 
+#ifndef DHT_PIN
+#define DHT_PIN 4  // D2
+#endif
+#ifndef DHT_TYPE
+#define DHT_TYPE DHT22
+#endif
 class BoardSocketDht : public BoardSocket {
  public:
   BoardSocketDht(DContext& c, const DPins& p) : BoardSocket(c, single(p), "SUPPLY_DHT") {}
 
  protected:
-  void extras() override { sensors_.push_back(new DSensorDHT(ctx_, 4, dreg::Dht)); }
+  void extras() override { sensors_.push_back(new DSensorDHT(ctx_, DHT_PIN, dreg::Dht, DHT_TYPE)); }
 
  private:
   static DPins single(DPins p) {
