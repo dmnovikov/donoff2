@@ -80,8 +80,14 @@ class DOutputMQTT : public DOutput, public DEvents {
   static constexpr uint32_t kRetryMs = 10000, kPublishMs = 8000, kFailsToReboot = 300;
   static constexpr size_t kInbox = 4;
 
+  // A short TCP write (the send buffer is full for longer than the timeout: a burst of values on a
+  // weak Wi-Fi) leaves a part of the packet unsent, and the broker reads the next packet as its rest:
+  // topics like "dht_humidit0" with "\x00!/donoff/..." in them. So on a failed publish the
+  // connection is closed at once (not disconnect(): that is one more packet into the broken stream).
   void pub(const std::string& sub, const std::string& v, bool retain = false) {
-    if (mqtt_.connected()) mqtt_.publish((base_ + sub).c_str(), v.c_str(), retain);
+    if (!mqtt_.connected() || mqtt_.publish((base_ + sub).c_str(), v.c_str(), retain)) return;
+    net_.stop();
+    ctx_.ev.log(("W:mqtt send failed (" + sub + "), reconnect").c_str());
   }
 
   void attempt(bool online) {

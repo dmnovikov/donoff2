@@ -14,6 +14,7 @@
 #include "doutput_modbus.h"
 #include "dpzem.h"
 #include "djsy.h"
+#include "djsy333.h"
 
 static int gFails = 0, gChecks = 0;
 #define CHECK(c)                                              \
@@ -934,6 +935,27 @@ static void i2cPinSettings() {
   CHECK(r.s.rtutx == 13);
 }
 
+static void jsy333() {
+  uint16_t r[djsy333::kRegs] = {};
+  auto at = [&](uint16_t reg) -> uint16_t& { return r[reg - djsy333::kStart]; };
+  at(0x0100) = 23012; at(0x0101) = 22950; at(0x0102) = 23100;  // V * 100
+  at(0x0103) = 123; at(0x0104) = 0; at(0x0105) = 5;            // A * 100
+  at(0x0106) = 280; at(0x0107) = 0; at(0x0108) = 11;           // W
+  at(0x0109) = 1; at(0x010A) = 5;                              // 65541 W
+  at(0x0115) = 4998;
+  at(0x0116) = 990; at(0x0119) = 980;
+  at(0x0120) = 2; at(0x0121) = 100;                            // (131072 + 100) / 100 kWh
+  djsy333::Reading x;
+  djsy333::decode(r, x);
+  CHECK(x.u100[0] == 23012 && x.u100[2] == 23100 && x.i100[0] == 123 && x.i100[2] == 5);
+  CHECK(x.p[0] == 280 && x.p[2] == 11 && x.pTotal == 65541 && x.freq100 == 4998);
+  CHECK(x.pf1000[0] == 990 && x.pfTotal1000 == 980 && x.energy100 == 131172);
+  at(0x0132) = 0x0009;  // A and the total reversed
+  djsy333::decode(r, x);
+  CHECK(x.p[0] == -280 && x.p[2] == 11 && x.pTotal == -65541);
+  CHECK(djsy333::kRegs * 2 + 5 <= 125);  // one answer fits the RTU buffer of DSensorRTU (60 registers)
+}
+
 int main() {
   valueFormat();
   multiValueSensor();
@@ -967,6 +989,7 @@ int main() {
   modbusAnswers();
   pzemFrame();
   rtuAndJsy();
+  jsy333();
   buttonPresses();
   ledPattern();
   disabledRelayAndExtras();

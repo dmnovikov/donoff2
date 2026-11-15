@@ -9,6 +9,7 @@
 #include <hw/dsensor_dht.h>
 #include <hw/dsensor_ds18b20.h>
 #include <hw/dsensor_jsy.h>
+#include <hw/dsensor_jsy333.h>
 #include <hw/dsensor_max44009.h>
 #include <hw/dsensor_pzem.h>
 #include <hw/dsensor_sct013.h>
@@ -26,6 +27,7 @@ enum : uint16_t {
   Temps = 75,       // 5 values: 75..89
   Bme = 90,         // 3 values: 90..98
   Jsy = 99,         // 6 values: 99..116
+  Jsy333 = 117,     // 16 values: 117..164
 };
 }
 
@@ -362,6 +364,19 @@ class BoardJsy : public BoardCollector {
     const DSettings& s = ctx_.s;
     DSensorRTU::Port port{rtuRx(), rtuTx(), (uint32_t)s.rtubaud, (uint8_t)s.rtuparity, (uint8_t)s.rtustop};
     sensors_.push_back(new DSensorJSY(ctx_, port, (uint8_t)s.rtuaddr, dreg::Jsy));
+  }
+};
+
+// JSY-MK-333 three phase; port, pins and address from the settings.
+class BoardJsy333 : public BoardCollector {
+ public:
+  BoardJsy333(DContext& c, const DPins& p) : BoardCollector(c, "sensor", "SUPPLY_JSY333", p) {}
+
+ protected:
+  void build() override {
+    const DSettings& s = ctx_.s;
+    DSensorRTU::Port port{rtuRx(), rtuTx(), (uint32_t)s.rtubaud, (uint8_t)s.rtuparity, (uint8_t)s.rtustop};
+    sensors_.push_back(new DSensorJSY333(ctx_, port, (uint8_t)s.rtuaddr, dreg::Jsy333));
   }
 };
 

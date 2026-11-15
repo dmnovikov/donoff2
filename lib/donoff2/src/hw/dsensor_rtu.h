@@ -11,6 +11,8 @@
 
 class DSensorRTU : public DSensor {
  public:
+  static constexpr uint16_t kMaxRegs = 60, kMaxAnswer = 5 + 2 * kMaxRegs;
+
   struct Port {
     uint8_t rx, tx;
     uint32_t baud;
@@ -18,8 +20,8 @@ class DSensorRTU : public DSensor {
   };
 
   DSensorRTU(DContext& ctx, const char* name, uint32_t periodMs, const Port& port, uint8_t addr, uint8_t fc,
-             uint16_t start, uint16_t count)
-      : DSensor(ctx, name, periodMs, 200), port_(port), addr_(addr), fc_(fc), start_(start), count_(count) {}
+             uint16_t start, uint16_t count, uint32_t answerMs = 200)
+      : DSensor(ctx, name, periodMs, answerMs), port_(port), addr_(addr), fc_(fc), start_(start), count_(count) {}
 
  protected:
   virtual void decode(const uint16_t* regs) = 0;  // fill the table from count registers
@@ -30,7 +32,8 @@ class DSensorRTU : public DSensor {
                                                          {SWSERIAL_8N2, SWSERIAL_8E2, SWSERIAL_8O2}};
     // invert is given: the default constructor of SoftwareSerial leaves it unset, and begin() without it
     // takes that garbage (an object made with new got an inverted line).
-    serial_.begin(port_.baud, kCfg[port_.stop == 2][port_.parity % 3], port_.rx, port_.tx, false);
+    // the receive buffer holds a whole answer (JSY-MK-333: 107 bytes; the default is 64)
+    serial_.begin(port_.baud, kCfg[port_.stop == 2][port_.parity % 3], port_.rx, port_.tx, false, kMaxAnswer);
 #else
     static const uint32_t kCfg[2][3] = {{SERIAL_8N1, SERIAL_8E1, SERIAL_8O1}, {SERIAL_8N2, SERIAL_8E2, SERIAL_8O2}};
     serial_.begin(port_.baud, kCfg[port_.stop == 2][port_.parity % 3], port_.rx, port_.tx);
@@ -45,11 +48,11 @@ class DSensorRTU : public DSensor {
   }
 
   bool collect() override {
-    uint8_t b[64];
+    uint8_t b[kMaxAnswer];
     size_t n = 0;
     while (serial_.available() && n < sizeof b) b[n++] = serial_.read();
-    uint16_t regs[29];
-    bool ok = count_ <= 29 && drtu::parseRead(b, n, addr_, fc_, count_, regs);
+    uint16_t regs[kMaxRegs];
+    bool ok = count_ <= kMaxRegs && drtu::parseRead(b, n, addr_, fc_, count_, regs);
     report(ok, n);
     if (!ok) return false;
     decode(regs);
