@@ -8,6 +8,7 @@
 #include "drelay.h"
 #include "drule.h"
 #include "dsensor.h"
+#include "dthermo.h"
 
 // What only the board can answer: sh net, sh ip, sh pinset ...
 class DCmdExtra {
@@ -70,6 +71,9 @@ class DCommands : public DBase {
         {"i2cscl", nullptr, nullptr, &s.i2cscl, -1, 39, Pin},
         {"rturx", nullptr, nullptr, &s.rturx, -1, 39, Pin},
         {"rtutx", nullptr, nullptr, &s.rtutx, -1, 39, Pin},
+        {"spisck", nullptr, nullptr, &s.spisck, -1, 39, Pin},
+        {"spics", nullptr, nullptr, &s.spics, -1, 39, Pin},
+        {"spiso", nullptr, nullptr, &s.spiso, -1, 39, Pin},
     };
   }
 
@@ -86,6 +90,7 @@ class DCommands : public DBase {
     for (int i = 0; i < 24; i++) t += (i ? "," : "") + std::to_string(s.tmatrix[i]);
     t += "\n";
     t += std::string("mqttServer=") + s.mqttServer + "\nmqttUser=" + s.mqttUser + "\nmqttPass=" + s.mqttPass + "\nmqttPort=" + s.mqttPort + "\ndevId=" + s.devId + "\nemail=" + s.email + "\ndevType=" + s.devType + "\n";
+    t += std::string("tsensor=") + s.tsensor + "\n";
     return t;
   }
 
@@ -153,6 +158,7 @@ class DCommands : public DBase {
     else if (k == "devId") copy(s.devId, v);
     else if (k == "email") copy(s.email, v);
     else if (k == "devType") copy(s.devType, v);
+    else if (k == "tsensor") copy(s.tsensor, v);
   }
 
   void loadMatrix(const std::string& v) {
@@ -200,6 +206,7 @@ class DCommands : public DBase {
     if (name == "devtype") return setText(ctx_.s.devType, sizeof ctx_.s.devType, "devtype", val);
     if (name == "default") return setDefault(val);
     if (name == "mqttserver") return setBroker(val);
+    if (name == "tsensor") return setThermoSensor(val);
     ctx_.ev.info("E:Varable error");
     return false;
   }
@@ -358,6 +365,22 @@ class DCommands : public DBase {
     return true;
   }
 
+  // tsensor=<value in C>: the thermostat follows it at once; tsensor=- back to the default of the board.
+  bool setThermoSensor(const std::string& val) {
+    std::string v = val == "-" ? "" : val;
+    if (v.size() >= sizeof ctx_.s.tsensor) {
+      ctx_.ev.info("E:params error");
+      return false;
+    }
+    if (!dthermo::find(sensors_, v.empty() ? ctx_.tsensorDefault : v.c_str())) {
+      ctx_.ev.info("E:no such sensor");
+      return false;
+    }
+    strcpy(ctx_.s.tsensor, v.c_str());
+    say(std::string("N:tsensor=") + dthermo::wanted(ctx_));
+    return true;
+  }
+
   bool setText(char* to, size_t n, const char* name, const std::string& val) {
     if (val.size() >= n) {
       ctx_.ev.info("E:params error");
@@ -398,6 +421,11 @@ class DCommands : public DBase {
     else if (what == "cschm2") say(bitsText(s.cschm2));
     else if (what == "email") say(std::string("email=") + s.email);
     else if (what == "devtype") say(std::string("devtype=") + s.devType);
+    else if (what == "tsensor") {
+      const char* w = dthermo::wanted(ctx_);
+      say(std::string("tsensor=") + w + (dthermo::find(sensors_, w) ? "" : " (no such sensor)"));
+    }
+    else if (what == "tsensors") say("tsensors=" + dthermo::list(sensors_));
     else if (what == "salt") say("salt=1206");
     else if (what == "mqtt") say("I:mqtt=" + ctx_.broker);
     else if (what.rfind("bschm", 0) == 0) ctx_.ev.info("depricated!");
@@ -419,6 +447,7 @@ class DCommands : public DBase {
   std::string allJson() {
     std::string j = "{\"synced\":" + std::to_string(ctx_.clock.timeState() == DTimeState::Synced);
     for (auto& p : table_) j += std::string(",\"") + p.name + "\":" + std::to_string(*p.v);
+    j += std::string(",\"tsensor\":\"") + dthermo::wanted(ctx_) + "\"";
     j += ",\"cschm1\":" + std::to_string(ctx_.s.cschm1) + ",\"cschm2\":" + std::to_string(ctx_.s.cschm2);
     for (size_t i = 0; i < relays_.size(); i++) j += std::string(",\"") + relays_[i]->name() + "\":" + std::to_string(relays_[i]->isOn());
     char buf[24];

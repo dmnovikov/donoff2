@@ -52,6 +52,7 @@ struct DContext {
   bool saveWanted = false;
   bool rebootWanted = false;
   std::string broker = "offline";  // where MQTT goes: "local ip:port", "global host:port", "offline"
+  const char* tsensorDefault = "temp_out";  // the value of the thermostat when the setting tsensor is empty
 };
 
 class DBase {

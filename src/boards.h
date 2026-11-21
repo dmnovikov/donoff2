@@ -11,6 +11,7 @@
 #include <hw/dsensor_jsy.h>
 #include <hw/dsensor_jsy333.h>
 #include <hw/dsensor_max44009.h>
+#include <hw/dsensor_max6675.h>
 #include <hw/dsensor_pzem.h>
 #include <hw/dsensor_sct013.h>
 
@@ -28,6 +29,7 @@ enum : uint16_t {
   Bme = 90,         // 3 values: 90..98
   Jsy = 99,         // 6 values: 99..116
   Jsy333 = 117,     // 16 values: 117..164
+  Thermocouple = 165,
 };
 }
 
@@ -72,12 +74,19 @@ class DBoard : public DDevice, public DCmdExtra {
     const DSettings& s = ctx_.s;
     auto next = [](int32_t set, int now) { return set >= 0 ? (int)set : now; };
     const struct { const char* n; int pin; } bus[] = {{"i2csda", next(s.i2csda, sda_)}, {"i2cscl", next(s.i2cscl, scl_)},
-                                                      {"rturx", next(s.rturx, rx_)}, {"rtutx", next(s.rtutx, tx_)}};
+                                                      {"rturx", next(s.rturx, rx_)}, {"rtutx", next(s.rtutx, tx_)},
+                                                      {"spisck", next(s.spisck, sck_)}, {"spics", next(s.spics, cs_)},
+                                                      {"spiso", next(s.spiso, so_)}};
     for (auto& b : bus)
       if (name != b.n && p == b.pin) return true;
-    return pinBusy(p);
+    return pinBusy(p, isSpi(name));
   }
-  bool pinBusy(long p) {
+  static bool isSpi(const std::string& name) { return name.rfind("spi", 0) == 0; }
+  // spi: the software SPI also takes GPIO16 of the ESP8266 (a plain in and out is enough for it)
+  bool pinBusy(long p, bool spi = false) {
+#ifndef ESP32
+    if (spi && p == 16) return p == pins_.button || p == pins_.led || p == pins_.r1 || p == pins_.r2 || p == pins_.tIn || p == pins_.tOut;
+#endif
     if (p == pins_.button || p == pins_.led || p == pins_.r1 || p == pins_.r2 || p == pins_.tIn || p == pins_.tOut) return true;
 #ifdef ESP32
     return p < 0 || p > 33 || (p >= 6 && p <= 11) || p == 20 || p == 24 || (p >= 28 && p <= 31);  // 34..39 only inputs
@@ -93,6 +102,7 @@ class DBoard : public DDevice, public DCmdExtra {
     else if (what == "dinfo") out = info_;
     else if (what == "i2c") out = "i2c sda=" + std::to_string(sda_) + " scl=" + std::to_string(scl_);
     else if (what == "rtu") out = "rtu rx=" + std::to_string(rx_) + " tx=" + std::to_string(tx_);
+    else if (what == "spi") out = "spi sck=" + std::to_string(sck_) + " cs=" + std::to_string(cs_) + " so=" + std::to_string(so_);
     else if (what == "cmpl")
       out = std::string("cmpl=R2:") + (relays_.size() > 1 ? "1" : "0") + ";DS_OUT:" + (findValue("temp_out") ? "1" : "0") + ";DS_INT:" + (findValue("temp_in") ? "1" : "0") + ";";
     else return false;
@@ -104,7 +114,7 @@ class DBoard : public DDevice, public DCmdExtra {
   // A bus pin: the setting if it is usable on this board, otherwise the default of the board.
   uint8_t busPin(int32_t set, uint8_t def, int& used, const char* name) {
     uint8_t p = def;
-    if (set >= 0 && !pinBusy(set)) p = (uint8_t)set;
+    if (set >= 0 && !pinBusy(set, isSpi(name))) p = (uint8_t)set;
     else if (set >= 0) {
       std::string t = std::string("E:") + name + " pin busy, default used";
       ctx_.ev.log(t.c_str());
@@ -116,7 +126,10 @@ class DBoard : public DDevice, public DCmdExtra {
   uint8_t scl(uint8_t def = I2C_SCL) { return busPin(ctx_.s.i2cscl, def, scl_, "i2cscl"); }
   uint8_t rtuRx(uint8_t def = RTU_RX) { return busPin(ctx_.s.rturx, def, rx_, "rturx"); }
   uint8_t rtuTx(uint8_t def = RTU_TX) { return busPin(ctx_.s.rtutx, def, tx_, "rtutx"); }
-  int sda_ = -1, scl_ = -1, rx_ = -1, tx_ = -1;
+  uint8_t spiSck(uint8_t def) { return busPin(ctx_.s.spisck, def, sck_, "spisck"); }
+  uint8_t spiCs(uint8_t def) { return busPin(ctx_.s.spics, def, cs_, "spics"); }
+  uint8_t spiSo(uint8_t def) { return busPin(ctx_.s.spiso, def, so_, "spiso"); }
+  int sda_ = -1, scl_ = -1, rx_ = -1, tx_ = -1, sck_ = -1, cs_ = -1, so_ = -1;
   DPins pins_;
   const char* info_;
 };
@@ -156,12 +169,13 @@ class BoardSocket : public DBoard {
       out = "I: hotter=0";
       return true;
     }
-    if (!tempOut_) {
+    const DValue* t = hotter_->source();
+    if (!t) {
       out = "I: no sensor";
       return true;
     }
     char b[16];
-    tempOut_->value(0).format(b, sizeof b);
+    t->format(b, sizeof b);
     out = std::to_string(s.hotter) + ";s=" + b + ";l=" + std::to_string(hotter_->levelSetting()) + ";td=" + std::to_string(s.tdelta);
     return true;
   }
@@ -172,13 +186,15 @@ class BoardSocket : public DBoard {
     auto* r1 = new DRelayGPIO(ctx_, "r1", pins_.r1);
     relays_.push_back(r1);
     if (pins_.tIn >= 0) sensors_.push_back(new DSensorDS18B20(ctx_, "temp_in", pins_.tIn, dreg::TempIn, false, "ds_in"));
-    if (pins_.tOut >= 0) {
-      tempOut_ = new DSensorDS18B20(ctx_, "temp_out", pins_.tOut, dreg::TempOut, true, "ds_out");
-      sensors_.push_back(tempOut_);
-      hotter_ = new DRuleHotter(ctx_, *r1, &tempOut_->value(0));
-      rules_.push_back(hotter_);
-      rules_.push_back(new DRuleCooler(ctx_, *r1, &tempOut_->value(0)));
-    }
+    tempOut_ = makeOut();
+    if (tempOut_) sensors_.push_back(tempOut_);
+    // the thermostat follows any value in C by the setting tsensor (temp_out by default)
+    hotter_ = new DRuleHotter(ctx_, *r1, nullptr);
+    hotter_->follow(&sensors_);
+    rules_.push_back(hotter_);
+    auto* cooler = new DRuleCooler(ctx_, *r1, nullptr);
+    cooler->follow(&sensors_);
+    rules_.push_back(cooler);
     rules_.push_back(new DRuleSchedule(ctx_, *r1, &s.lschm1, &s.aofs1, &s.nosync1, true));
     rules_.push_back(new DRuleAutoStop(ctx_, *r1, &s.aofs1, true));
     if (pins_.r2 >= 0) {
@@ -190,8 +206,13 @@ class BoardSocket : public DBoard {
     extras();
   }
   virtual void extras() {}
+  // The sensor of the thermostat (temp_out): the DS18B20 on tOut, a board may put another one there.
+  virtual DSensor* makeOut() {
+    if (pins_.tOut < 0) return nullptr;
+    return new DSensorDS18B20(ctx_, "temp_out", pins_.tOut, dreg::TempOut, true, "ds_out");
+  }
 
-  DSensorDS18B20* tempOut_ = nullptr;
+  DSensor* tempOut_ = nullptr;
   DRuleHotter* hotter_ = nullptr;
 };
 
@@ -264,6 +285,38 @@ class BoardTempOdds : public BoardSocketDs2 {
   void extras() override {
     BoardSocketDs2::extras();
     sensors_.push_back(new DSensorDifference(ctx_, "temp_odd", &tempOut_->value(0), &out2_->value(0), dreg::TempOdd));
+  }
+};
+
+// A MAX6675 thermocouple: the value temp_tc, the thermostat follows it by default (tsensor=temp_in moves it).
+// The pins: spisck, spics, spiso (after reset), -1 = the default of the env (MAX6675_SCK, MAX6675_CS,
+// MAX6675_SO); sh spi tells where they are. No temp_out: its D2 is the default SCK.
+#ifndef MAX6675_SCK
+#define MAX6675_SCK 4   // D2
+#endif
+#ifndef MAX6675_CS
+#define MAX6675_CS 16   // D0
+#endif
+#ifndef MAX6675_SO
+#define MAX6675_SO 15   // D8
+#endif
+class BoardSocketMax6675 : public BoardSocket {
+ public:
+  BoardSocketMax6675(DContext& c, const DPins& p) : BoardSocket(c, free(p), "SUPPLY_MAX6675") { c.tsensorDefault = "temp_tc"; }
+
+ protected:
+  void extras() override {
+    uint8_t sck = spiSck(MAX6675_SCK), cs = spiCs(MAX6675_CS), so = spiSo(MAX6675_SO);
+    sensors_.push_back(new DSensorMAX6675(ctx_, "temp_tc", sck, cs, so, dreg::Thermocouple, true, "tc"));
+  }
+
+ private:
+  static bool used(int8_t pin) { return pin == MAX6675_SCK || pin == MAX6675_CS || pin == MAX6675_SO; }
+  static DPins free(DPins p) {
+    p.tOut = -1;
+    if (used(p.tIn)) p.tIn = -1;
+    if (used(p.r2)) p.r2 = -1;
+    return p;
   }
 };
 

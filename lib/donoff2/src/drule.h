@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include "drelay.h"
 #include "dsettings.h"
+#include "dthermo.h"
 #include "dvalue.h"
 
 namespace dscheme {
@@ -48,8 +49,16 @@ class DRule : public DBase {
 class DRuleTemp : public DRule {
  public:
   DRuleTemp(DContext& ctx, const char* name, DRelay& relay, const DValue* temp) : DRule(ctx, name, relay), temp_(temp) {}
+  // Follow the value named by tsensor (or the default of the board) among these sensors.
+  void follow(std::vector<DSensor*>* sensors) { sensors_ = sensors; }
+  // the value now: looked up every pass, so a new tsensor works at once
+  const DValue* source() {
+    if (sensors_) temp_ = dthermo::find(*sensors_, dthermo::wanted(ctx_));
+    return temp_;
+  }
 
   void loop() override {
+    source();
     if (!active()) return;
     if (ctx_.s.lschm1 > 0) {  // a schedule and a thermostat do not share a relay
       char b[48];
@@ -92,6 +101,7 @@ class DRuleTemp : public DRule {
   long delta100() const { return toDelta100(ctx_.s.tdelta); }
 
   const DValue* temp_;
+  std::vector<DSensor*>* sensors_ = nullptr;
 };
 
 class DRuleHotter : public DRuleTemp {

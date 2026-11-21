@@ -10,6 +10,7 @@ struct DSettings {
   char devId[16] = "empty_dev";
   char email[50] = "";
   char devType[12] = "";                 // empty = what the board says
+  char tsensor[16] = "";                 // the value the thermostat follows, empty = the default of the board
 
   int32_t aofs1 = 0, aofs2 = 0;          // seconds, 0 = off
   int32_t lschm1 = 0, lschm2 = 0;        // schedule of a relay: 0 none, 1..20 presets, 99 and 100 custom
@@ -25,6 +26,7 @@ struct DSettings {
   int32_t rtubaud = 9600, rtuparity = 0, rtustop = 1, rtuaddr = 1;  // Modbus RTU: only stored for now
   int32_t i2csda = -1, i2cscl = -1;    // the I2C bus, -1 = what the board says; used after a restart
   int32_t rturx = -1, rtutx = -1;      // the UART of RTU sensors (pins of the ESP), the same way
+  int32_t spisck = -1, spics = -1, spiso = -1;  // the software SPI (MAX6675), the same way
   int32_t clevel[4] = {-128, -128, -128, -128};  // what they mean is up to the board
   uint32_t cschm1 = 0b000000000011111111111100;  // bit (23 - h) is hour h
   uint32_t cschm2 = 0b111111111111100000000000;

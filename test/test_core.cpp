@@ -15,6 +15,7 @@
 #include "dpzem.h"
 #include "djsy.h"
 #include "djsy333.h"
+#include "dmax6675.h"
 
 static int gFails = 0, gChecks = 0;
 #define CHECK(c)                                              \
@@ -124,6 +125,83 @@ struct Rig : Bed {
     b.commands().handle(c);
   }
 };
+
+// Two temperatures and a pressure; the thermostat follows tsensor.
+struct FixedTemp : DSensor {
+  float t = 0;
+  FixedTemp(DContext& c, const char* n) : DSensor(c, n, 1000) { addValue(n, 100, "C"); }
+  bool collect() override {
+    value(0).set(t);
+    return true;
+  }
+};
+
+struct FollowBoard : DDevice {
+  FixedTemp* out = nullptr;
+  FixedTemp* tc = nullptr;
+  FakeRelay* r1 = nullptr;
+  explicit FollowBoard(DContext& c) : DDevice(c, "socket") {}
+  void build() override {
+    out = new FixedTemp(ctx_, "temp_out");
+    tc = new FixedTemp(ctx_, "temp_tc");
+    sensors_ = {out, tc, new FakeMeter(ctx_)};
+    r1 = new FakeRelay(ctx_, "r1");
+    relays_ = {r1};
+    auto* h = new DRuleHotter(ctx_, *r1, nullptr);
+    h->follow(&sensors_);
+    rules_ = {h};
+  }
+};
+
+static void thermostatSensorChoice() {
+  Bed bed;
+  FollowBoard b(bed.ctx);
+  b.begin();
+  auto step = [&] {
+    bed.clock.now += 1100;
+    b.loop();
+  };
+  auto cmd = [&](const char* c) {
+    bed.clock.now += 1100;
+    b.commands().handle(c);
+  };
+  bed.s.hotter = 1;
+  bed.s.dtempl = bed.s.ntempl = bed.s.ctempl = 25;
+  bed.s.tdelta = 10;
+  b.out->t = 20;  // cold: on
+  b.tc->t = 30;   // hot: off
+  step();
+  step();
+  CHECK(b.r1->isOn());  // temp_out by default
+  cmd("sh tsensor");
+  CHECK(bed.ev.lastInfo() == "tsensor=temp_out");
+  cmd("sh tsensors");
+  CHECK(bed.ev.lastInfo() == "tsensors=temp_out,temp_tc,temp_in");
+  cmd("tsensor=temp_tc;");
+  CHECK(bed.ev.lastInfo() == "N:tsensor=temp_tc" && bed.ctx.saveWanted);
+  step();
+  CHECK(!b.r1->isOn());  // at once, no reset
+  cmd("tsensor=press");  // not a temperature
+  CHECK(bed.ev.lastInfo() == "E:no such sensor" && std::string(bed.s.tsensor) == "temp_tc");
+  cmd("tsensor=nothing");
+  CHECK(bed.ev.lastInfo() == "E:no such sensor");
+  CHECK(b.commands().saveText().find("tsensor=temp_tc\n") != std::string::npos);
+  cmd("tsensor=-");
+  CHECK(bed.ev.lastInfo() == "N:tsensor=temp_out" && bed.s.tsensor[0] == 0);
+  step();
+  CHECK(b.r1->isOn());
+  b.commands().loadText("tsensor=temp_tc\n");
+  CHECK(std::string(bed.s.tsensor) == "temp_tc");
+  bed.ctx.tsensorDefault = "temp_in";  // a board with another default
+  bed.s.tsensor[0] = 0;
+  cmd("sh tsensor");
+  CHECK(bed.ev.lastInfo() == "tsensor=temp_in");
+  strcpy(bed.s.tsensor, "gone");  // stored on another board: the thermostat has no sensor, the relay goes off
+  step();
+  CHECK(!b.r1->isOn());
+  cmd("sh tsensor");
+  CHECK(bed.ev.lastInfo() == "tsensor=gone (no such sensor)");
+}
 
 static void valueFormat() {
   DValue v("a", 100, "C", 0);
@@ -933,6 +1011,15 @@ static void i2cPinSettings() {
   CHECK(r.s.rtutx == -1 && r.ev.lastInfo() == "E:pin busy");
   r.cmd("rtutx=13");
   CHECK(r.s.rtutx == 13);
+  r.cmd("spics=13");  // rtutx has it
+  CHECK(r.s.spics == -1 && r.ev.lastInfo() == "E:pin busy");
+  r.cmd("spisck=14;");
+  CHECK(r.s.spisck == 14 && r.ev.lastInfo() == "N:spisck=14, after reset");
+  r.cmd("spiso=15");
+  CHECK(r.s.spiso == 15);
+  r.cmd("sh spiso");
+  CHECK(r.ev.lastInfo() == "spiso=15");
+  CHECK(r.b.commands().saveText().find("spisck=14\nspics=-1\nspiso=15\n") != std::string::npos);
 }
 
 static void jsy333() {
@@ -954,6 +1041,18 @@ static void jsy333() {
   djsy333::decode(r, x);
   CHECK(x.p[0] == -280 && x.p[2] == 11 && x.pTotal == -65541);
   CHECK(djsy333::kRegs * 2 + 5 <= 125);  // one answer fits the RTU buffer of DSensorRTU (60 registers)
+}
+
+static void max6675() {
+  long t = -1;
+  CHECK(dmax6675::decode((uint16_t)(100 << 3), t) == dmax6675::Result::Ok && t == 2500);   // 100 x 0.25 C
+  CHECK(dmax6675::decode((uint16_t)(4095 << 3), t) == dmax6675::Result::Ok && t == 102375);
+  CHECK(dmax6675::decode(0, t) == dmax6675::Result::Ok && t == 0);
+  CHECK(dmax6675::decode((uint16_t)((100 << 3) | 4), t) == dmax6675::Result::Open);
+  CHECK(dmax6675::decode(0xFFFF, t) == dmax6675::Result::NoDevice);
+  CHECK(dmax6675::decode(0x0002, t) == dmax6675::Result::NoDevice);
+  CHECK(dmax6675::decode(0, t, true) == dmax6675::Result::NoDevice);  // SO on GPIO16, pulled down
+  CHECK(dmax6675::decode((uint16_t)(100 << 3), t, true) == dmax6675::Result::Ok && t == 2500);
 }
 
 int main() {
@@ -990,6 +1089,8 @@ int main() {
   pzemFrame();
   rtuAndJsy();
   jsy333();
+  max6675();
+  thermostatSensorChoice();
   buttonPresses();
   ledPattern();
   disabledRelayAndExtras();
