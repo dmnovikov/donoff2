@@ -21,8 +21,16 @@ class DOutputMQTT : public DOutput, public DEvents {
     pick_.configure(s.mqttlocal != 0, s.mqttServer, atoi(s.mqttPort));
     mqtt_.setBufferSize(1024);
     mqtt_.setSocketTimeout(3);
-    mqtt_.setCallback([this](char*, uint8_t* p, unsigned int n) {
-      if (inbox_.size() < kInbox) inbox_.emplace_back((const char*)p, n);
+    if (DSensorRemote* r = dev_.remote()) {  // the topics of the other device
+      std::string from = std::string("/") + s.mqttUser + "/" + r->sourceDev() + "/out/";
+      remoteValue_ = from + "sensors/" + r->sourceValue();
+      remoteStatus_ = from + "status";
+    }
+    mqtt_.setCallback([this](char* topic, uint8_t* p, unsigned int n) {
+      DSensorRemote* r = dev_.remote();
+      if (r && remoteValue_ == topic) r->feedValue((const char*)p, n);
+      else if (r && remoteStatus_ == topic) r->feedStatus((const char*)p, n);
+      else if (inbox_.size() < kInbox) inbox_.emplace_back((const char*)p, n);
     });
   }
 
@@ -128,6 +136,10 @@ class DOutputMQTT : public DOutput, public DEvents {
     std::string will = base_ + "out/status";
     if (!mqtt_.connect(id.c_str(), s.mqttUser, s.mqttPass, will.c_str(), 0, true, "offline")) return;
     mqtt_.subscribe((base_ + "in/params").c_str());
+    if (!remoteValue_.empty()) {
+      mqtt_.subscribe(remoteValue_.c_str());
+      mqtt_.subscribe(remoteStatus_.c_str());
+    }
     pub("out/status", "online", true);
     pub("out/meta", meta(), true);
     published_ = false;
@@ -214,4 +226,5 @@ class DOutputMQTT : public DOutput, public DEvents {
   std::vector<uint8_t> seen_;
   uint32_t lastTry_ = 0, lastPub_ = 0, fails_ = 0;
   bool tried_ = false, published_ = false, up_ = false;
+  std::string remoteValue_, remoteStatus_;
 };

@@ -2,6 +2,7 @@
 #pragma once
 #include <vector>
 #include "dcommands.h"
+#include "dremote.h"
 #include "drelay.h"
 #include "drule.h"
 #include "dsensor.h"
@@ -13,6 +14,10 @@ class DDevice : public DBase {
 
   void begin() {
     build();
+    if (ctx_.s.rsensor[0] && DSensorRemote::validSource(ctx_.s.rsensor, sizeof ctx_.s.rsensor)) {
+      remote_ = new DSensorRemote(ctx_, ctx_.s.rsensor);
+      sensors_.push_back(remote_);
+    }
     for (auto* s : sensors_) s->begin();
   }
 
@@ -47,6 +52,7 @@ class DDevice : public DBase {
   virtual bool hasRs485() const { return false; }  // the portal shows the RTU fields
 
   DCommands& commands() { return commands_; }
+  DSensorRemote* remote() { return remote_; }
   DValue* findValue(const char* n) {
     for (auto* s : sensors_)
       if (DValue* v = s->find(n)) return v;
@@ -64,6 +70,7 @@ class DDevice : public DBase {
  private:
   DCommands commands_;
   DStorage* storage_ = nullptr;
+  DSensorRemote* remote_ = nullptr;
   uint32_t lastRules_ = 0;
   bool ruled_ = false;
 };

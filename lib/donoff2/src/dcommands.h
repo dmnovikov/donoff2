@@ -8,6 +8,7 @@
 #include "drelay.h"
 #include "drule.h"
 #include "dsensor.h"
+#include "dremote.h"
 #include "dthermo.h"
 
 // What only the board can answer: sh net, sh ip, sh pinset ...
@@ -74,6 +75,7 @@ class DCommands : public DBase {
         {"spisck", nullptr, nullptr, &s.spisck, -1, 39, Pin},
         {"spics", nullptr, nullptr, &s.spics, -1, 39, Pin},
         {"spiso", nullptr, nullptr, &s.spiso, -1, 39, Pin},
+        {"rtimeout", nullptr, nullptr, &s.rtimeout, 10, 3600, Plain},
     };
   }
 
@@ -90,7 +92,7 @@ class DCommands : public DBase {
     for (int i = 0; i < 24; i++) t += (i ? "," : "") + std::to_string(s.tmatrix[i]);
     t += "\n";
     t += std::string("mqttServer=") + s.mqttServer + "\nmqttUser=" + s.mqttUser + "\nmqttPass=" + s.mqttPass + "\nmqttPort=" + s.mqttPort + "\ndevId=" + s.devId + "\nemail=" + s.email + "\ndevType=" + s.devType + "\n";
-    t += std::string("tsensor=") + s.tsensor + "\n";
+    t += std::string("tsensor=") + s.tsensor + "\nrsensor=" + s.rsensor + "\n";
     return t;
   }
 
@@ -159,6 +161,7 @@ class DCommands : public DBase {
     else if (k == "email") copy(s.email, v);
     else if (k == "devType") copy(s.devType, v);
     else if (k == "tsensor") copy(s.tsensor, v);
+    else if (k == "rsensor" && (v.empty() || DSensorRemote::validSource(v, sizeof s.rsensor))) copy(s.rsensor, v);
   }
 
   void loadMatrix(const std::string& v) {
@@ -207,6 +210,7 @@ class DCommands : public DBase {
     if (name == "default") return setDefault(val);
     if (name == "mqttserver") return setBroker(val);
     if (name == "tsensor") return setThermoSensor(val);
+    if (name == "rsensor") return setRemoteSensor(val);
     ctx_.ev.info("E:Varable error");
     return false;
   }
@@ -381,6 +385,22 @@ class DCommands : public DBase {
     return true;
   }
 
+  // rsensor=<dev>/<value>: temp_remote from another device, after reset; rsensor=- none.
+  bool setRemoteSensor(const std::string& val) {
+    std::string v = val == "-" ? "" : val;
+    if (!v.empty() && !DSensorRemote::validSource(v, sizeof ctx_.s.rsensor)) {
+      ctx_.ev.info("E:params error, rsensor=dev/value");
+      return false;
+    }
+    if (!v.empty() && v.substr(0, v.find('/')) == ctx_.s.devId) {
+      ctx_.ev.info("E:rsensor of itself");
+      return false;
+    }
+    strcpy(ctx_.s.rsensor, v.c_str());
+    say("N:rsensor=" + (v.empty() ? std::string("-") : v) + ", after reset");
+    return true;
+  }
+
   bool setText(char* to, size_t n, const char* name, const std::string& val) {
     if (val.size() >= n) {
       ctx_.ev.info("E:params error");
@@ -426,6 +446,14 @@ class DCommands : public DBase {
       say(std::string("tsensor=") + w + (dthermo::find(sensors_, w) ? "" : " (no such sensor)"));
     }
     else if (what == "tsensors") say("tsensors=" + dthermo::list(sensors_));
+    else if (what == "rsensor") {
+      DSensorRemote* r = remote();
+      std::string t = std::string("rsensor=") + (s.rsensor[0] ? s.rsensor : "-");
+      if (r && r->source() != s.rsensor) t += ", now " + r->source();
+      if (r) t += r->age() < 0 ? ", no data yet" : ", age=" + std::to_string(r->age()) + "s";
+      else if (s.rsensor[0]) t += ", after reset";
+      say(t);
+    }
     else if (what == "salt") say("salt=1206");
     else if (what == "mqtt") say("I:mqtt=" + ctx_.broker);
     else if (what.rfind("bschm", 0) == 0) ctx_.ev.info("depricated!");
@@ -441,6 +469,12 @@ class DCommands : public DBase {
       if (!out.empty()) say(out);
     }
     return true;
+  }
+
+  DSensorRemote* remote() {
+    for (auto* sn : sensors_)
+      if (strcmp(sn->name(), "temp_remote") == 0) return static_cast<DSensorRemote*>(sn);
+    return nullptr;
   }
 
   // sh all: everything in one line, to the log only.

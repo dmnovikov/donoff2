@@ -203,6 +203,74 @@ static void thermostatSensorChoice() {
   CHECK(bed.ev.lastInfo() == "tsensor=gone (no such sensor)");
 }
 
+static void remoteTemperature() {
+  Bed bed;
+  strcpy(bed.s.devId, "lamp9");
+  FollowBoard b(bed.ctx);
+  auto cmd = [&](const char* c) {
+    bed.clock.now += 1100;
+    b.commands().handle(c);
+  };
+  cmd("rsensor=dmzk10/temp_out;");
+  CHECK(bed.ev.lastInfo() == "N:rsensor=dmzk10/temp_out, after reset" && std::string(bed.s.rsensor) == "dmzk10/temp_out");
+  cmd("rsensor=lamp9/temp_in");
+  CHECK(bed.ev.lastInfo() == "E:rsensor of itself");
+  cmd("rsensor=dmzk10");
+  CHECK(bed.ev.lastInfo() == "E:params error, rsensor=dev/value");
+  cmd("rsensor=a/b c");
+  CHECK(bed.ev.lastInfo() == "E:params error, rsensor=dev/value");
+  cmd("sh rsensor");
+  CHECK(bed.ev.lastInfo() == "rsensor=dmzk10/temp_out, after reset");
+  CHECK(b.commands().saveText().find("rsensor=dmzk10/temp_out\n") != std::string::npos);
+  b.begin();  // the start after reset: temp_remote is there
+  DSensorRemote* r = b.remote();
+  CHECK(r && r->sourceDev() == "dmzk10" && r->sourceValue() == "temp_out");
+  cmd("tsensor=temp_remote;");
+  CHECK(bed.ev.lastInfo() == "N:tsensor=temp_remote");
+  bed.s.hotter = 1;
+  bed.s.dtempl = bed.s.ntempl = bed.s.ctempl = 25;
+  bed.s.tdelta = 10;
+  auto step = [&] {
+    bed.clock.now += 1100;
+    b.loop();
+  };
+  step();
+  CHECK(!b.r1->isOn() && !b.findValue("temp_remote")->ok());  // nothing came yet
+  cmd("sh rsensor");
+  CHECK(bed.ev.lastInfo() == "rsensor=dmzk10/temp_out, no data yet");
+  r->feedValue("20.50", 5);
+  step();
+  CHECK(b.r1->isOn() && b.findValue("temp_remote")->raw == 2050);
+  CHECK(bed.ev.lastLog() == "L:r1:ON, hotter" || bed.ev.lastLog() == "N:temp_remote ok from dmzk10/temp_out");
+  for (int i = 0; i < 100; i++) step();  // 110 s: still fresh
+  CHECK(b.r1->isOn());
+  for (int i = 0; i < 12; i++) step();   // > 120 s without a message: off
+  CHECK(!b.r1->isOn() && !b.findValue("temp_remote")->ok());
+  r->feedValue("19.00", 5);
+  step();
+  CHECK(b.r1->isOn());
+  r->feedStatus("offline", 7);  // the Last Will of the source
+  step();
+  CHECK(!b.r1->isOn());
+  r->feedStatus("online", 6);
+  r->feedValue("19.00", 5);
+  step();
+  CHECK(b.r1->isOn());
+  r->feedValue("-127.00", 7);  // the source lost its sensor
+  step();
+  CHECK(!b.r1->isOn());
+  r->feedValue("abc", 3);
+  step();
+  CHECK(!b.r1->isOn());
+  r->feedValue("26.50", 5);  // warm: stays off
+  step();
+  CHECK(!b.r1->isOn() && b.findValue("temp_remote")->ok());
+  cmd("rsensor=-;");
+  CHECK(bed.ev.lastInfo() == "N:rsensor=-, after reset" && bed.s.rsensor[0] == 0);
+  cmd("rtimeout=5");
+  CHECK(bed.ev.lastInfo() == "E:params error" && bed.s.rtimeout == 120);
+}
+
 static void valueFormat() {
   DValue v("a", 100, "C", 0);
   char b[24];
@@ -1091,6 +1159,7 @@ int main() {
   jsy333();
   max6675();
   thermostatSensorChoice();
+  remoteTemperature();
   buttonPresses();
   ledPattern();
   disabledRelayAndExtras();

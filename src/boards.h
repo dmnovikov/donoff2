@@ -30,6 +30,7 @@ enum : uint16_t {
   Jsy = 99,         // 6 values: 99..116
   Jsy333 = 117,     // 16 values: 117..164
   Thermocouple = 165,
+  Remote = 168,     // temp_remote: DSensorRemote::kModbus
 };
 }
 
