@@ -16,6 +16,7 @@
 #include "djsy.h"
 #include "djsy333.h"
 #include "dmax6675.h"
+#include "dntc.h"
 
 static int gFails = 0, gChecks = 0;
 #define CHECK(c)                                              \
@@ -1123,6 +1124,22 @@ static void max6675() {
   CHECK(dmax6675::decode((uint16_t)(100 << 3), t, true) == dmax6675::Result::Ok && t == 2500);
 }
 
+static void ntcThermistor() {
+  dntc::Params p;  // 10 kOhm + 10 kOhm, B 3950, 3.3 V
+  long t = -1;
+  CHECK(dntc::decode(1650, p, t) == dntc::Result::Ok && t == 2500);  // the middle: R = R0
+  CHECK(dntc::decode(1464, p, t) == dntc::Result::Ok && t == 3018);  // warmer: less resistance, less voltage
+  CHECK(dntc::decode(3000, p, t) == dntc::Result::Ok && t == -1915);
+  CHECK(dntc::decode(500, p, t) == dntc::Result::Ok && t == 6957);
+  CHECK(dntc::decode(3290, p, t) == dntc::Result::Open);   // a free input sits at the supply
+  CHECK(dntc::decode(3234, p, t) == dntc::Result::Open);
+  CHECK(dntc::decode(0, p, t) == dntc::Result::Short);
+  CHECK(dntc::decode(-5, p, t) == dntc::Result::Short);
+  CHECK(dntc::adsMv(17546) == 3289 && dntc::adsMv(9185) == 1722);  // read on the bench
+  p.beta = 3435;
+  CHECK(dntc::decode(1650, p, t) == dntc::Result::Ok && t == 2500);
+}
+
 int main() {
   valueFormat();
   multiValueSensor();
@@ -1158,6 +1175,7 @@ int main() {
   rtuAndJsy();
   jsy333();
   max6675();
+  ntcThermistor();
   thermostatSensorChoice();
   remoteTemperature();
   buttonPresses();

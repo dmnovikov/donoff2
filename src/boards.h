@@ -31,6 +31,7 @@ enum : uint16_t {
   Jsy333 = 117,     // 16 values: 117..164
   Thermocouple = 165,
   Remote = 168,     // temp_remote: DSensorRemote::kModbus
+  Ntc = 171,        // 4 values: 171..182
 };
 }
 
@@ -349,6 +350,42 @@ class BoardSocketAds : public BoardSocket {
 
  protected:
   void extras() override { sensors_.push_back(new DSensorADS1115(ctx_, sda(13), scl(4), dreg::Ads)); }
+
+ private:
+  static DPins noOut(DPins p) {
+    p.tOut = -1;
+    return p;
+  }
+};
+
+// Four NTC thermistors on an ADS1115: temp_ntc0..temp_ntc3, the thermostat follows temp_ntc0 by default.
+// The divider of every input: 3.3 V - resistor - input - thermistor - GND. An env can change the parts:
+// -DNTC_SERIES_OHM=, -DNTC_R0_OHM= (the thermistor at 25 C), -DNTC_BETA=, -DNTC_VCC_MV=.
+#ifndef NTC_SERIES_OHM
+#define NTC_SERIES_OHM 10000
+#endif
+#ifndef NTC_R0_OHM
+#define NTC_R0_OHM 10000
+#endif
+#ifndef NTC_BETA
+#define NTC_BETA 3950
+#endif
+#ifndef NTC_VCC_MV
+#define NTC_VCC_MV 3300
+#endif
+class BoardSocketAdsNtc : public BoardSocket {
+ public:
+  BoardSocketAdsNtc(DContext& c, const DPins& p) : BoardSocket(c, noOut(p), "SUPPLY_ADS_NTC") { c.tsensorDefault = "temp_ntc0"; }
+
+ protected:
+  void extras() override {
+    dntc::Params n;
+    n.seriesOhm = NTC_SERIES_OHM;
+    n.r0Ohm = NTC_R0_OHM;
+    n.beta = NTC_BETA;
+    n.vccMv = NTC_VCC_MV;
+    sensors_.push_back(new DSensorADS1115Ntc(ctx_, sda(13), scl(4), dreg::Ntc, n));
+  }
 
  private:
   static DPins noOut(DPins p) {
