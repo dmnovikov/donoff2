@@ -31,15 +31,21 @@ class DSensorI2C : public DSensor {
     if (!ready_) {
       uint8_t err = find();
       if (err == 0) err = setupChip();
-      report(err);
-      if (err) return false;
+      if (err) {
+        failed(err);
+        return false;
+      }
+      report(0);
       ready_ = true;
       for (size_t i = 0; i < count(); i++) value(i).notReady();  // the first measurement is not done yet
       return true;
     }
-    if (measure()) return true;
+    if (measure()) {
+      fails_ = 0;
+      return true;
+    }
     ready_ = false;
-    report(kReadFailed);
+    failed(kReadFailed);
     return false;
   }
 
@@ -89,6 +95,14 @@ class DSensorI2C : public DSensor {
     return err;
   }
 
+  // One lost reading is not news: an error goes to the log after kFailsToLog failures in a row
+  // (at the start at once), and the chip is looked for again quietly meanwhile.
+  static constexpr uint8_t kFailsToLog = 3;
+  void failed(uint8_t err) {
+    if (fails_ < 255) fails_++;
+    if (lastErr_ == 255 || fails_ >= kFailsToLog) report(err);
+  }
+
   void report(uint8_t err) {
     if (err == lastErr_) return;
     lastErr_ = err;
@@ -101,5 +115,6 @@ class DSensorI2C : public DSensor {
   uint8_t sda_, scl_, addr_;
   uint8_t addrs_[2];
   uint8_t lastErr_ = 255;
+  uint8_t fails_ = 0;
   bool ready_ = false;
 };

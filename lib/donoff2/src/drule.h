@@ -92,7 +92,7 @@ class DRuleTemp : public DRule {
   long dayNightLevel() const { return toLevel100(dayNightSetting()); }
   int32_t dayNightSetting() const {
     if (!ctx_.clock.hasTime()) return ctx_.s.ctempl;
-    switch (dscheme::at(ctx_, ctx_.s.onoffschm)) {
+    switch (dscheme::at(ctx_, 99)) {  // day and night are always the custom scheme 99 (cschm1); onoffschm1 is kept but not used
       case dscheme::Hour::On: return ctx_.s.dtempl;
       case dscheme::Hour::Off: return ctx_.s.ntempl;
       default: return ctx_.s.ctempl;

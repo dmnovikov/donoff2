@@ -19,7 +19,7 @@ struct DSettings {
   int32_t hotter = 0, cooler = 0;        // hotter: 1 day/night levels, 2 the level of every hour
   int32_t ctempl = 20, dtempl = 18, ntempl = 21;  // < 100 are degrees, otherwise 1/100 of a degree
   int32_t tdelta = 10;                   // < 50 are tenths, otherwise 1/100 of a degree
-  int32_t onoffschm = 99;                // the scheme that says what is day and what is night
+  int32_t onoffschm = 99;                // not used: day and night are always scheme 99 (cschm1); kept for old settings and commands
   int32_t tz = 3;
   int32_t autoreboot = 0;
   int32_t mqttlocal = 1;                // look for the local broker of the site (mDNS) before mqttServer

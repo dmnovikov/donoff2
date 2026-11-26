@@ -377,13 +377,15 @@ static void levelUnits() {
 static void dayNightAndMatrix() {
   Rig r;
   r.s.hotter = 1;
-  r.s.onoffschm = 2;  // always day
+  r.s.cschm1 = 0xFFFFFFul;  // scheme 99: every hour is day
+  r.s.onoffschm = 1;         // not used any more: 1 would have been "always night"
   r.s.dtempl = 30;
   r.s.ntempl = 5;
   r.s.ctempl = 5;
   r.temp(20);
   CHECK(r.b.r1->isOn());
-  r.s.onoffschm = 1;  // always night
+  r.s.cschm1 = 0;  // every hour is night
+  r.s.onoffschm = 2;
   r.s.tdelta = 10;
   r.temp(20);
   CHECK(!r.b.r1->isOn());
@@ -462,6 +464,49 @@ static void staleTimeKeepsSchedules() {
   CHECK(r.b.r1->isOn());
 }
 
+static void thermostatLocksRelay() {
+  Rig r;
+  r.cmd("sh termostat");
+  CHECK(r.ev.lastInfo() == "termostat=0");
+  r.cmd("r11");
+  CHECK(r.b.r1->isOn());
+  r.cmd("r10");
+  r.cmd("cooler=1");
+  r.cmd("sh termostat");
+  CHECK(r.ev.lastInfo() == "termostat=1");
+  r.cmd("r11");
+  CHECK(!r.b.r1->isOn() && r.ev.lastInfo() == "E: R1 by termostat, hotter=0 or cooler=0 first");
+  r.cmd("cooler=0");
+  r.cmd("hotter=2");
+  r.cmd("sh termostat");
+  CHECK(r.ev.lastInfo() == "termostat=1");
+  r.cmd("hotter=0");
+  r.cmd("r11");
+  CHECK(r.b.r1->isOn());
+  r.cmd("cooler=1");
+  r.cmd("termostat=1");
+  CHECK(r.ev.lastInfo() == "E:params error, only termostat=0" && r.s.cooler == 1);
+  r.cmd("termostat=0");
+  CHECK(r.ev.lastInfo() == "N:termostat=0" && r.s.cooler == 0 && r.s.hotter == 0 && !r.b.r1->isOn());
+  r.cmd("hotter=2");
+  r.cmd("termostat=0");
+  CHECK(r.s.hotter == 0);
+}
+
+static void allLevels() {
+  Rig r;
+  r.cmd("tdelta=10");
+  r.cmd("atempl=23");
+  CHECK(r.s.ctempl == 23 && r.s.dtempl == 23 && r.s.ntempl == 23);
+  CHECK(r.ev.lastInfo() == "N:C=23,D=23,N=23 dT=10");
+  r.cmd("atemp=2450");
+  CHECK(r.s.ctempl == 2450 && r.s.dtempl == 2450 && r.s.ntempl == 2450);
+  r.cmd("atempl=20000");
+  CHECK(r.ev.lastInfo() == "E:params error" && r.s.dtempl == 2450);
+  r.cmd("atempl=x");
+  CHECK(r.ev.lastInfo() == "E:not set, INT wait" && r.s.ntempl == 2450);
+}
+
 static void autoStopManual() {
   Rig r;
   r.s.aofs1 = 10;
@@ -490,7 +535,7 @@ static void commandsAnswerLikeOld() {
   r.cmd("sh nothing");
   CHECK(r.ev.lastInfo() == "E: sh param not recognized");
   r.cmd("nothing=1");
-  CHECK(r.ev.lastInfo() == "E:Varable error");
+  CHECK(r.ev.lastInfo() == "E: No var (nothing)");
   r.cmd("nothing");
   CHECK(r.ev.lastInfo() == "no command");
   r.cmd("hotter=abc");
@@ -1154,6 +1199,8 @@ int main() {
   wateringOncePerHour();
   noTimeSchedules();
   staleTimeKeepsSchedules();
+  thermostatLocksRelay();
+  allLevels();
   autoStopManual();
   commandsAnswerLikeOld();
   schemesRefused();

@@ -196,6 +196,33 @@ class DCommands : public DBase {
   }
 
   void say(const std::string& s) { ctx_.ev.info(s.c_str()); }
+  // termostat=0: the thermostat off, whichever of hotter and cooler was on; switching it on is hotter= or cooler=
+  bool setThermostatOff(const std::string& val) {
+    if (val != "0") {
+      ctx_.ev.info("E:params error, only termostat=0");
+      return false;
+    }
+    ctx_.s.hotter = ctx_.s.cooler = 0;
+    relayOff(0, "from publisher");
+    say("N:termostat=0");
+    return true;
+  }
+  // atempl=value: the three levels at once, ctempl = dtempl = ntempl = value
+  bool setAllLevels(const std::string& val) {
+    long v;
+    if (!toInt(val, &v)) {
+      ctx_.ev.info("E:not set, INT wait");
+      return false;
+    }
+    if (v < -5000 || v > 10000) {
+      ctx_.ev.info("E:params error");
+      return false;
+    }
+    ctx_.s.ctempl = ctx_.s.dtempl = ctx_.s.ntempl = v;
+    say("N:" + levelsText());
+    return true;
+  }
+  bool thermostatOn() const { return ctx_.s.hotter != 0 || ctx_.s.cooler != 0; }
 
   bool set(const std::string& name, const std::string& val) {
     for (auto& p : table_)
@@ -210,8 +237,10 @@ class DCommands : public DBase {
     if (name == "default") return setDefault(val);
     if (name == "mqttserver") return setBroker(val);
     if (name == "tsensor") return setThermoSensor(val);
+    if (name == "atempl" || name == "atemp") return setAllLevels(val);
+    if (name == "termostat" || name == "thermostat") return setThermostatOff(val);
     if (name == "rsensor") return setRemoteSensor(val);
-    ctx_.ev.info("E:Varable error");
+    say("E: No var (" + name + ")");
     return false;
   }
 
@@ -445,6 +474,7 @@ class DCommands : public DBase {
       const char* w = dthermo::wanted(ctx_);
       say(std::string("tsensor=") + w + (dthermo::find(sensors_, w) ? "" : " (no such sensor)"));
     }
+    else if (what == "termostat" || what == "thermostat") say(std::string("termostat=") + (thermostatOn() ? "1" : "0"));
     else if (what == "tsensors") say("tsensors=" + dthermo::list(sensors_));
     else if (what == "rsensor") {
       DSensorRemote* r = remote();
@@ -518,6 +548,11 @@ class DCommands : public DBase {
       size_t i = in[1] - '1';
       if (i >= relays_.size()) {
         say(std::string("I:R") + in[1] + "=DISABLED");
+        return true;
+      }
+      // the first relay belongs to the thermostat while hotter or cooler is on: no manual switching
+      if (i == 0 && thermostatOn()) {
+        say("E: R1 by termostat, hotter=0 or cooler=0 first");
         return true;
       }
       if (in[2] == '1') relays_[i]->on("from publisher");
